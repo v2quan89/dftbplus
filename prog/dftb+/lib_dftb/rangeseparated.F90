@@ -334,22 +334,22 @@ contains
       call checkAndInitScreening(self, matrixSize, tmpDRho)
       tmpDDRho = tmpDRho - self%dRhoprev
       self%dRhoprev = tmpDRho
+      !$OMP PARALLEL DO DEFAULT(SHARED) SCHEDULE(RUNTIME) PRIVATE(tmp, iAtNu)
       do iAtMu = 1, nAtom
         do iAtNu = 1, nAtom
-          tmp = maxval( abs( tmpovr(iSquare(iAtMu):iSquare(iAtMu + 1) - 1,&
-              & iSquare(iAtNu):iSquare(iAtNu + 1) - 1) ) )
-          testovr(iAtMu,iAtNu) = tmp
+          tmp = maxval( abs( tmpovr(&
+              & iSquare(iAtNu):iSquare(iAtNu + 1) - 1, iSquare(iAtMu):iSquare(iAtMu + 1) - 1) ) )
+          testovr(iAtNu,iAtMu) = tmp
         end do
+        call index_heap_sort(ovrind(:,iAtMu),testovr(:,iAtMu))
       end do
-      do iAtMu = 1, nAtom
-        call index_heap_sort(ovrind(iAtMu,:),testovr(iAtMu,:))
-      end do
+      !$OMP END PARALLEL DO
 
     end subroutine allocateAndInit
 
 
     !> Evaluate the update to hamiltonian due to change the in the DM
-    pure subroutine evaluateHamiltonian(tmpDHam)
+    subroutine evaluateHamiltonian(tmpDHam)
 
       !> Update for the old hamiltonian on exit
       real(dp), intent(out) :: tmpDHam(:,:)
@@ -365,25 +365,29 @@ contains
       nAtom = size(self%species)
 
       pbound = maxval(abs(tmpDDRho))
-      tmpDham = 0.0_dp
+      tmpDham(:,:) = 0.0_dp
+      !$OMP PARALLEL DO DEFAULT(SHARED) SCHEDULE(RUNTIME)&
+      !$OMP& PRIVATE(descM, kk, iAt1, descA, iSp1, nOrb1, prb, iAtNu, descN, gammabatchtmp)&
+      !$OMP& PRIVATE(ll, iAt2, iSp2, nOrb2, tstbound, descB, gammabatch, nu, jj, tmpvec2, ii)&
+      !$OMP& PRIVATE(tmpvec1, tmp, mu) REDUCTION(+:tmpDham)
       loopMu: do iAtMu = 1, nAtom
         descM = getDescriptor(iAtMu, iSquare)
         loopKK: do kk = 1, nAtom
-          iAt1 = ovrind(iAtMu, nAtom + 1 - kk)
+          iAt1 = ovrind(nAtom + 1 - kk, iAtMu)
           descA = getDescriptor(iAt1, iSquare)
           iSp1 = self%species(iAt1)
           nOrb1 = orb%nOrbSpecies(iSp1)
-          prb = pbound * testovr(iAt1, iAtMu)
+          prb = pbound * testovr(iAtMu,iAt1)
           if(abs(prb) >= self%pScreeningThreshold) then
             loopNu: do iAtNu = 1, iAtMu
               descN = getDescriptor(iAtNu, iSquare)
               gammabatchtmp = self%lrGammaEval(iAtMu, iAtNu) + self%lrGammaEval(iAt1, iAtNu)
               loopLL: do ll = 1, nAtom
-                iAt2 = ovrind(iAtNu, nAtom + 1 - ll)
+                iAt2 = ovrind(nAtom + 1 - ll, iAtNu)
                 iSp2 = self%species(iAt2)
                 nOrb2 = orb%nOrbSpecies(iSp2)
                 ! screening condition
-                tstbound = prb * testovr(iAt2, iAtNu)
+                tstbound = prb * testovr(iAtNu, iAt2)
                 if(abs(tstbound) >= self%pScreeningThreshold) then
                   descB = getDescriptor(iAt2, iSquare)
                   gammabatch = (self%lrGammaEval(iAtMu, iAt2) + self%lrGammaEval(iAt1, iAt2)&
@@ -413,6 +417,7 @@ contains
           end if
         end do loopKK
       end do loopMu
+      !$OMP END PARALLEL DO
 
     end subroutine evaluateHamiltonian
 
@@ -1097,7 +1102,6 @@ contains
     real(dp) :: sPrimeTmp2(orb%mOrb,orb%mOrb,3)
     real(dp), allocatable :: gammaPrimeTmp(:,:,:), tmpovr(:,:), tmpRho(:,:), tmpderiv(:,:)
 
-    write(stdOut,'(a)') "rangeSep: addLRGradients"
     @:ASSERT(size(gradients,dim=1) == 3)
     call allocateAndInit(tmpovr, tmpRho, gammaPrimeTmp, tmpderiv)
     nAtom = size(self%species)
@@ -1206,7 +1210,6 @@ contains
       call symmetrizeSquareMatrix(tmpovr)
       call symmetrizeSquareMatrix(tmpRho)
       ! precompute the gamma derivatives
-      write(stdOut,'(a)') "precomputing the lr-gamma derivatives"
       gammaPrimeTmp = 0.0_dp
       do iAt1 = 1, nAtom
         do iAt2 = 1, nAtom
@@ -1273,7 +1276,7 @@ contains
         energy = energy + tmp * self%lrGammaEval(iAt1,iAt2)
       end do
     end do
-    energy = -energy / 8.0_dp
+    energy = -0.125_dp * energy
 
     call env%globalTimer%stopTimer(globalTimers%energyEval)
 

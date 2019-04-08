@@ -2201,7 +2201,7 @@ contains
               & 'The count for the occurance of shells of species ', &
               & trim(geo%speciesNames(iSp1)),' are:'
           write(stdout, *)iTmpN(1:slako%orb%nShell(iSp1))
-          stop
+          call abortProgram()
         end if
       end do
       deallocate(iTmpN)
@@ -2518,6 +2518,7 @@ contains
 
     ! X-H interaction corrections including H5 and damping
     ctrl%tDampH = .false.
+    ctrl%tDampHVer2 = .false.
     ctrl%h5SwitchedOn = .false.
     call getChildValue(node, "HCorrection", value1, "None", child=child)
     call getNodeName(value1, buffer)
@@ -2528,6 +2529,14 @@ contains
       ! Switch the correction on
       ctrl%tDampH = .true.
       call getChildValue(value1, "Exponent", ctrl%dampExp)
+    case ("dampingver2")
+      ! Switch the damping correction version 2 on
+      ctrl%tDampHVer2 = .true.
+      allocate(ctrl%dampingCoeff(geo%nSpecies))
+      do iSp = 1, geo%nSpecies
+        call getChildValue(value1, geo%speciesNames(iSp), ctrl%dampingCoeff(iSp), 0.0_dp)
+      end do
+      print *, ctrl%dampingCoeff
     case ("h5")
       ! Switch the correction on
       ctrl%h5SwitchedOn = .true.

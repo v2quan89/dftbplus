@@ -1271,11 +1271,18 @@ contains
       if (input%ctrl%tDampH) then
         tDampedShort = (speciesMass < 3.5_dp * amu__au)
         !tDampedShort(:) = (speciesName == "H" .or. speciesName == "h")
+      else if (input%ctrl%tDampHVer2) then
+        tDampedShort = (speciesMass < 3.5_dp * amu__au)
       else
         tDampedShort(:) = .false.
       end if
       sccInp%tDampedShort = tDampedShort
       sccInp%dampExp = input%ctrl%dampExp
+      ! damping version 2 
+      if (input%ctrl%tDampHVer2) then
+        allocate(sccInp%dampingCoeff(nType))
+        sccInp%dampingCoeff(:) = input%ctrl%dampingCoeff(:)
+      end if
 
       ! H5 correction
       if (input%ctrl%h5SwitchedOn) then
@@ -3799,7 +3806,7 @@ contains
     integer, intent(in) :: iSolver
     logical, intent(in) :: tSpin
     real(dp), intent(in) :: kPoints(:,:)
-    type(TParallelOpts), intent(in) :: parallelOpts
+    type(TParallelOpts), intent(in), allocatable :: parallelOpts
     integer, intent(in) :: nIndepHam
     real(dp), intent(in) :: tempElec
 
@@ -3824,9 +3831,11 @@ contains
     end if
 
     nKPoint = size(kPoints, dim=2)
-    if (tElsiSolver .and. parallelOpts%nGroup /= nIndepHam * nKPoint) then
-      call error("This solver requires as many parallel processor groups as there are independent&
-          & spin and k-point combinations")
+    if (withMpi) then
+      if (tElsiSolver .and. parallelOpts%nGroup /= nIndepHam * nKPoint) then
+        call error("This solver requires as many parallel processor groups as there are independent&
+            & spin and k-point combinations")
+      end if
     end if
 
     if (iSolver == electronicSolverTypes%pexsi .and. tempElec < epsilon(0.0)) then

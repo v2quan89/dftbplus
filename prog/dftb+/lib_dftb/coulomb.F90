@@ -30,6 +30,8 @@ module coulomb
   public :: invRCluster, invRPeriodic, sumInvR, addInvRPrime, getOptimalAlphaEwald, getMaxGEwald
   public :: getMaxREwald, invRStress
   public :: addInvRPrimeXlbomd
+  public :: invRPDipole, invRPPDipole
+
 
   !> 1/r interaction for all atoms with another group
   interface sumInvR
@@ -52,6 +54,14 @@ module coulomb
     module procedure addInvRPrimeXlbomdCluster
     module procedure addInvRPrimeXlbomdPeriodic
   end interface addInvRPrimeXlbomd
+
+  interface InvRPDipole
+    module procedure InvRPDipole_cluster
+  end interface InvRPDipole
+
+  interface InvRPPDipole
+    module procedure InvRPPDipole_cluster
+  end interface InvRPPDipole
 
 
   !> Maximal argument value of erf, after which it is constant
@@ -1796,6 +1806,105 @@ contains
 
   end subroutine addNeighbourContribsStress
 
+
+  !!* Calculates both - (r_xyz)12 / R12**2 coulomb potential matrices, i.e. the
+  !!* derivative by r1 (10) and r2 (01).
+  !!* @param invRMat10 Contains the directional derivative (by r1) on exit.
+  !!* @param invRMat01 Contains the directional derivative (by r2) on exit.
+  !!* @param nAtom Number of atoms
+  !!* @param coord List of atomic coordinates.
+  !!* @note Comments on notations:
+  !!* 10, 11, 20: Convention of notation for derivatives with respect to
+  !!* coordinates of atom 1 or 2, see multipoles.pdf in documentation.
+  subroutine InvRPDipole_cluster(invRMat10, invRMat01, nAtom, coord)
+    real(dp), intent(inout) :: invRMat10(:,:,-1:), invRMat01(:,:,-1:)
+    integer, intent(in) :: nAtom
+    real(dp), intent(in)  :: coord(:,:)
+
+    integer :: iAt1, iAt2 ! Atom loop indices
+    real(dp) :: dist
+    real(dp) :: r1(-1:1), r2(-1:1)
+
+    @:ASSERT(all(shape(invRMat10) == (/nAtom, nAtom, 3/)))
+    @:ASSERT(all(shape(invRMat01) == shape(invRMat10)))
+    @:ASSERT(all(shape(coord) == (/3, nAtom/)))
+
+    invRMat10(:,:,:) = 0.0_dp
+
+    do iAt1 = 1, nAtom
+      do iAt2 = iAt1 + 1, nAtom
+        dist = sqrt(sum((coord(:,iAt1) - coord(:,iAt2))**2))
+        !! Rearranging coordinates x,y,z to -1 (y), 0 (z), +1 (x)
+        r1(-1) = coord(2,iAt2)
+        r1(0) = coord(3,iAt2)
+        r1(1) = coord(1,iAt2)
+        r2(-1) = coord(2,iAt1)
+        r2(0) = coord(3,iAt1)
+        r2(1) = coord(1,iAt1)
+        invRMat01(iAt1,iAt2,:) = (r2(:) - r1(:)) / dist**3
+        invRMat01(iAt2,iAt1,:) = -invRMat01(iAt1,iAt2,:)
+      end do
+    end do
+
+    invRMat10(:,:,:) = -invRMat01(:,:,:)
+    
+  end subroutine InvRPDipole_cluster
+
+
+
+  !!* Calculates the second derivative coulomb potential matrices.
+  !!* @param invRMat20 Contains the 2nd derivative (by r1) on exit.
+  !!* @param invRMat11 Contains the 2nd derivative (by r1, r2) on exit.
+  !!* @param nAtom Number of atoms
+  !!* @param coord List of atomic coordinates.
+  !!* @note invRMat20 and invRMatt02 are identical, so only one is
+  !!* calculated. Also, invRMat11 = -invRMat20 and the order of derivations
+  !!* in invRMat11 is redundant since the Schwarz' relation applies.
+  !!* @note Comments on notations:
+  !!* 10, 11, 20: Convention of notation for derivatives with respect to
+  !!* coordinates of atom 1 or 2, see multipoles.pdf in documentation.
+  subroutine InvRPPDipole_cluster(invRMat20, invRMat11, nAtom, coord)
+    real(dp), intent(inout) :: invRMat20(:,:,-1:,-1:)
+    real(dp), intent(inout) :: invRMat11(:,:,-1:,-1:)
+    integer, intent(in) :: nAtom
+    real(dp), intent(in)  :: coord(:,:)
+
+    integer :: iAt1, iAt2, iMM
+    real(dp) :: dist
+    real(dp) :: r1(-1:1), r2(-1:1)
+
+    @:ASSERT(all(shape(invRMat20) == (/nAtom, nAtom, 3, 3/)))
+    @:ASSERT(all(shape(invRMat11) == shape(invRMat20)))
+    @:ASSERT(all(shape(coord) == (/3, nAtom/)))
+
+    invRMat20(:,:,:,:) = 0.0_dp
+    invRMat11(:,:,:,:) = 0.0_dp
+
+    !! No on-site block for the coulomb matrix! These elements are added
+    !! by expGammaPrime2 (see short_gamma.F90)
+    do iAt1 = 1, nAtom
+      do iAt2 = iAt1 + 1, nAtom
+        dist = sqrt(sum((coord(:,iAt1) - coord(:,iAt2))**2))
+        !! Rearranging coordinates x,y,z to -1 (y), 0 (z), +1 (x)
+        r1(-1) = coord(2,iAt2)
+        r1(0) = coord(3,iAt2)
+        r1(1) = coord(1,iAt2)
+        r2(-1) = coord(2,iAt1)
+        r2(0) = coord(3,iAt1)
+        r2(1) = coord(1,iAt1)
+        do iMM = -1, 1
+          invRMat20(iAt1,iAt2,iMM,:) = (r1(iMM) - r2(iMM)) * &
+              & (r1(:) - r2(:)) * 3.0_dp / dist**5
+          invRMat20(iAt1,iAt2,iMM,iMM) = -1.0_dp / dist**3 + &
+              &invRMat20(iAt1,iAt2,iMM,iMM)
+        end do
+        invRMat20(iAt2,iAt1,:,:) = invRMat20(iAt1,iAt2,:,:)
+      end do
+    end do
+
+    invRMat11(:,:,:,:) = -invRMat20(:,:,:,:)
+
+  end subroutine InvRPPDipole_cluster
 
 
 end module coulomb

@@ -18,7 +18,7 @@ module populations
   implicit none
   private
 
-  public :: mulliken, skewMulliken, getChargePerShell
+  public :: mulliken, skewMulliken, getChargePerShell, dipole
 
 
   !> Provides an interface to calculate Mulliken populations, either dual basis atomic block,
@@ -29,11 +29,16 @@ module populations
     module procedure mullikenPerAtom
   end interface mulliken
 
-
   !> Provides an interface to calculate Mulliken populations for anti-symmetric density matrices
   interface skewMulliken
     module procedure skewMullikenPerBlock
   end interface skewMulliken
+
+  !!* Interface to calculate dipole polarizations.
+  interface dipole
+    module procedure dipolePerAtom
+    module procedure dipolePerOrbital
+  end interface dipole
 
 contains
 
@@ -313,6 +318,126 @@ contains
     end do
 
   end subroutine getChargePerShell
+
+
+  !!* Dipole polarization analysis for the multipole expansion.
+  !!* @param dd Dipole polarization per atom
+  !!* @param posMtx1 Position matrix in packed format (origin at center 1)
+  !!* @param posMtx2 Position matrix in packed format (origin at center 2)
+  !!* @param rho Density matrix in Packed format
+  !!* @param orb Information about the orbitals.
+  !!* @param iNeighbor Number of neighbours of each real atom (central cell)
+  !!* @param nNeighbor List of neighbours for each atom, starting at 0 for
+  !!* itself
+  !!* @param iPair indexing array for the Hamiltonian
+  subroutine dipolePerAtom(dd, posMtx1, posMtx2, rho, orb, iNeighbor, nNeighbor, iPair)
+    real(dp), intent(inout) :: dd(:,:)
+    real(dp), intent(in) :: posMtx1(:,:), posMtx2(:,:)
+    real(dp), intent(in) :: rho(:)
+    type(TOrbitals), intent(in) :: orb
+    integer, intent(in) :: iNeighbor(0:,:)
+    integer, intent(in) :: nNeighbor(:)
+    integer, intent(in) :: iPair(0:,:)
+
+    real(dp), allocatable :: dPerOrbital(:,:,:)
+    integer :: nAtom, iMM
+
+    nAtom = size(orb%nOrbAtom)
+    @:ASSERT(all(shape(dd) == (/nAtom, 3/)))
+    @:ASSERT(size(posMtx1, dim=2) == 3)
+    @:ASSERT(size(rho) == size(posMtx1, dim=1))
+    @:ASSERT(size(posMtx2, dim=1) == size(posMtx1, dim=1))
+    @:ASSERT(size(posMtx2, dim=2) == size(posMtx1, dim=2))
+
+    allocate(dPerOrbital(orb%mOrb, nAtom, 3))
+    dPerOrbital(:,:,:) = 0.0_dp
+
+    call dipolePerOrbital(dPerOrbital, posMtx1, posMtx2, rho, orb, &
+        &iNeighbor, nNeighbor, iPair)
+
+    do iMM = 1, 3
+      ! dd(:,iMM) = dd(:,iMM) + sum(reshape(dPerOrbital(1:orb%mOrb,1:nAtom,iMM), &
+      !     &(/orb%mOrb, nAtom/)), dim=1)
+      dd(:,iMM) = dd(:,iMM) + sum(dPerOrbital(1:orb%mOrb,1:nAtom,iMM), dim=1)
+    end do
+
+    deallocate(dPerOrbital)
+
+  end subroutine dipolePerAtom
+
+
+
+  !!* Calculate dipole polarizations per Orbital in the system using
+  !!* purely real-space overlap and density matrix values.
+  !!* $d_a = \sum_k w_k\sum_{\mu on a}\sum_\nu \[ X_m \]_{\nu\mu}(k)
+  !!*        . \rho_{\mu\nu}(k)$
+  !!* @param dd Dipole polarization per atom
+  !!* @param posMtx1 Position matrix in packed format (origin at center 1)
+  !!* @param posMtx2 Position matrix in packed format (origin at center 2)
+  !!* @param rho Density matrix in packed format
+  !!* @param orb Information about the orbitals.
+  !!* @param iNeighbor Number of neighbours of each real atom (central cell)
+  !!* @param nNeighbor List of neighbours for each atom, starting at 0 for
+  !!* itself
+  !!* @param iPair indexing array for packed matrices
+  !!* @todo add description of algorithm to programer manual / documentation.
+  subroutine dipolePerOrbital(dd, posMtx1, posMtx2, rho, orb, iNeighbor, nNeighbor, &
+      &iPair)
+    real(dp), intent(inout) :: dd(:,:,:)
+    real(dp), intent(in) :: posMtx1(:,:), posMtx2(:,:)
+    real(dp), intent(in) :: rho(:)
+    type(TOrbitals), intent(in) :: orb
+    integer, intent(in) :: iNeighbor(0:,:)
+    integer, intent(in) :: nNeighbor(:)
+    integer, intent(in) :: iPair(0:,:)
+
+    integer   :: iOrig, iEnd
+    integer   :: iNeigh
+    integer   :: nAtom, iAt1, iAt2
+    integer   :: nOrb1, nOrb2
+    integer   :: iMM ! Indexer for the three dipole coordinates
+    real(dp)  :: sqrTmp(orb%mOrb,orb%mOrb)
+    real(dp)  :: dTmp(orb%mOrb**2,3)
+    integer :: ii, kk
+
+    nAtom = size(orb%nOrbAtom)
+
+    @:ASSERT(size(posMtx1, dim=2) == 3)
+    @:ASSERT(all(shape(dd) == (/orb%mOrb, nAtom, 3/)))
+    @:ASSERT(size(rho) == size(posMtx1, dim=1))
+    @:ASSERT(size(posMtx2, dim=1) == size(posMtx1, dim=1))
+    @:ASSERT(size(posMtx2, dim=2) == size(posMtx1, dim=2))
+
+    dd(:,:,:) = 0.0_dp
+    do iAt1 = 1, nAtom
+      nOrb1 = orb%nOrbAtom(iAt1)
+      do iNeigh = 0, nNeighbor(iAt1)
+        dTmp(:,:) = 0.0_dp
+        sqrTmp(:,:) = 0.0_dp
+        iAt2 = iNeighbor(iNeigh, iAt1)
+        nOrb2 = orb%nOrbAtom(iAt2)
+        iOrig = iPair(iNeigh,iAt1) + 1
+        iEnd = iOrig + nOrb1 * nOrb2 - 1
+        do iMM = 1, 3
+          dTmp(1:nOrb1*nOrb2,iMM) = rho(iOrig:iEnd) * &
+              &posMtx1(iOrig:iEnd,iMM)
+          sqrTmp(1:nOrb2,1:nOrb1) = &
+              & reshape(dTmp(1:nOrb1*nOrb2,iMM), (/nOrb2,nOrb1/))
+          dd(1:nOrb1,iAt1,iMM) = dd(1:nOrb1,iAt1,iMM) &
+              &+ sum(sqrTmp(1:nOrb2,1:nOrb1), dim=1)
+          if (iAt1 /= iAt2) then
+            dTmp(1:nOrb1*nOrb2,iMM) = rho(iOrig:iEnd) * &
+                &posMtx2(iOrig:iEnd,iMM)
+            sqrTmp(1:nOrb1,1:nOrb2) = &
+                & reshape(dTmp(1:nOrb1*nOrb2,iMM), (/nOrb1,nOrb2/))
+            dd(1:nOrb2,iAt2,iMM) = dd(1:nOrb2,iAt2,iMM) &
+                &+ sum(sqrTmp(1:nOrb1,1:nOrb2), dim=1)
+          end if
+        end do
+      end do
+    end do
+
+  end subroutine dipolePerOrbital
 
 
 

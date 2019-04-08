@@ -51,6 +51,9 @@ module energies
     !> Total 3rd order
     real(dp) :: e3rd    = 0.0_dp
 
+    !* Dipole energy
+    real(dp) :: dipoles = 0.0_dp 
+
     !> Excitation energy
     real(dp) :: Eexcited = 0.0_dp
 
@@ -109,6 +112,9 @@ module energies
     !> atom resolved 3rd order
     real(dp), allocatable :: atom3rd(:)
 
+    !* atom resolved dipoles
+    real(dp), pointer :: atomDipole(:)   
+
     !> atom resolved total
     real(dp), allocatable :: atomTotal(:)
 
@@ -145,6 +151,7 @@ contains
     allocate(self%atomElec(nAtom))
     allocate(self%atomDisp(nAtom))
     allocate(self%atom3rd(nAtom))
+    allocate(self%atomDipole(nAtom))
     allocate(self%atomTotal(nAtom))
     self%atomRep(:) = 0.0_dp
     self%atomNonSCC(:) = 0.0_dp
@@ -156,6 +163,7 @@ contains
     self%atomElec(:) = 0.0_dp
     self%atomDisp(:) = 0.0_dp
     self%atom3rd(:) = 0.0_dp
+    self%atomDipole(:) = 0.0_dp
     self%atomTotal(:) = 0.0_dp
 
     self%Erep = 0.0_dp
@@ -168,6 +176,7 @@ contains
     self%Eelec = 0.0_dp
     self%EDisp = 0.0_dp
     self%E3rd = 0.0_dp
+    self%dipoles = 0.0_dp
     self%Etotal = 0.0_dp
     self%EMermin = 0.0_dp
     self%EGibbs = 0.0_dp

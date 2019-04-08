@@ -19,8 +19,9 @@ module slakocont
   implicit none
   private
 
-  public :: OSlakoCont, init
-  public :: addTable, getMIntegrals, getCutoff, getSKIntegrals
+  public :: OSlakoCont, init, destruct
+  public :: addTable, addVecTable, getMIntegrals, getCutoff, getSKIntegrals
+  public :: getMPOrigins
 
 
   !> A specific Slater-Koster table implementation.
@@ -34,6 +35,7 @@ module slakocont
   type OSlakoCont
     private
     type(PSlaKo_), allocatable :: slakos(:,:)
+    type(PMPoleOrigin_), pointer :: dipoleOrigin(:,:)
     integer :: nSpecies
     integer :: mInt
     real(dp) :: cutoff
@@ -41,17 +43,37 @@ module slakocont
     logical :: tInit = .false.
   end type OSlakoCont
 
+  !! Pointer to the table containing the origins of a multipole vector
+  type PMPoleOrigin_
+    integer :: iType = 0
+    type(OOrigins), pointer :: pOrigin => null()
+  end type PMPoleOrigin_
+
+  !! Pointer to the table containing on-site integrals
+  ! type POnSites_
+  !   integer :: iType = 0
+  !   type(OOrigins), pointer :: pOnSites => null()
+  ! end type POnSites_
 
   !> Initialises SlakoCont
   interface init
     module procedure SlakoCont_init
   end interface init
 
+  !!* Destroys the components of SlakoCont
+  interface destruct
+    module procedure SlakoCont_destruct
+  end interface
 
   !> Adds a Slater-Koster table for a given diatomic pair to the container.
   interface addTable
     module procedure SlakoCont_addTableEqGrid
   end interface addTable
+
+  !!* Adds a origin vector table for a given diatomic pair to the container.
+  interface addVecTable
+    module procedure SlakoCont_addVecTable
+  end interface addVecTable
 
 
   !> Returns the maximal number of integrals needed for the interactions.
@@ -71,6 +93,12 @@ module slakocont
     module procedure SlakoCont_getSKIntegrals
   end interface getSKIntegrals
 
+  !!* Returns the origin vector table of the multipole expansion for a given
+  !!* species pair.
+  interface getMPOrigins
+    module procedure SlakoCont_getMPOrigins
+  end interface getMPOrigins
+
 contains
 
 
@@ -87,6 +115,8 @@ contains
 
     self%nSpecies = nSpecies
     allocate(self%slakos(nSpecies, nSpecies))
+    allocate(self%dipoleOrigin(nSpecies, nSpecies))
+    ! INITALLOCATE_PARR(self%onSites, (nSpecies, nSpecies))
     self%mInt = 0
     self%cutoff = 0.0_dp
     self%tDataOK = .false.
@@ -94,6 +124,19 @@ contains
 
   end subroutine SlakoCont_init
 
+  
+  !!* Destroys the components of SlakoCont
+  !!* @param self SlakoCont instance
+  subroutine SlakoCont_destruct(self)
+    type(OSlakoCont), intent(inout) :: self
+
+    deallocate(self%slakos)
+    deallocate(self%dipoleOrigin)
+    ! DEALLOCATE_PARR(self%onSites)
+    self%tInit = .false.
+    self%tDataOK = .false.
+
+  end subroutine SlakoCont_destruct
 
   !> Adds a Slater-Koster table for a given diatomic pair to the container.
   subroutine SlakoCont_addTableEqGrid(self, pTable, iSp1, iSp2)
@@ -118,6 +161,26 @@ contains
     self%tDataOK = all(self%slakos(:,:)%iType /= 0)
 
   end subroutine SlakoCont_addTableEqGrid
+
+
+
+  !!* Adds a vector table for a given diatomic pair to the container.
+  !!* @param self SlakoCont instance
+  !!* @param pTable Pointer to the vector table to be added
+  !!* @param iSp1 Index of the first interacting species
+  !!* @param iSp2 Index of the second interacting species
+  subroutine SlakoCont_addVecTable(self, pOrigins, iSp1, iSp2)
+    type(OSlakoCont), intent(inout) :: self
+    type(OOrigins),  allocatable :: pOrigins
+    integer, intent(in) :: iSp1, iSp2
+
+    @:ASSERT(self%tInit)
+    self%dipoleOrigin(iSp2, iSp1)%iType = 1
+    self%dipoleOrigin(iSp2, iSp1)%pOrigin = pOrigins
+    self%tDataOK = all(self%dipoleOrigin(:,:)%iType /= 0)
+    self%mInt = max(self%mInt, getNIntegrals(pOrigins))
+
+  end subroutine SlakoCont_addVecTable
 
 
   !> Returns the maximal number of integrals needed for describing any of the interactions in the
@@ -176,5 +239,42 @@ contains
     call getSKIntegrals(self%slakos(sp2, sp1)%pSlakoEqGrid, sk, dist)
 
   end subroutine SlakoCont_getSKIntegrals
+
+  !!* Returns the on-site integrals for a given species.
+  !!* @param self SlakoCont instance
+  !!* @param onSites Contains the integrals on exit
+  !!* @param sp Index of the species.
+  ! subroutine SlakoCont_getOnSites(self, onSites, sp)
+  !   type(OSlakoCont), intent(in) :: self
+  !   real(dp), intent(out) :: onSites(:)
+  !   integer, intent(in) :: sp
+
+  !   ASSERT(self%tInit .and. self%tDataOK)
+  !   call getOnSites(self%slakos(sp, sp)%pOnSites, onSites)
+
+  ! end subroutine SlakoCont_getOnSites
+
+
+
+  !!* Returns the multipole expansion origin vectors (one for each interaction)
+  !!* of a atom pair for a given distance.
+  !!* @param self SlakoCont instance
+  !!* @param origVecs Contains the integrals on exit
+  !!* @param dist Distance of the two atoms
+  !!* @param sp1 Index of the first interacting species.
+  !!* @param sp2 Index of the second interacting species.
+  subroutine SlakoCont_getMPOrigins(self, origVecs, centers, dist, sp1, sp2)
+    type(OSlakoCont), intent(in) :: self
+    real(dp), intent(out) :: origVecs(:,:)
+    integer, intent(out) :: centers(:)
+    real(dp), intent(in) :: dist
+    integer, intent(in) :: sp1, sp2
+
+    @:ASSERT(self%tInit .and. self%tDataOK)
+    call getMPOrigins(self%dipoleOrigin(sp2, sp1)%pOrigin, origVecs, centers, &
+        &dist)
+
+  end subroutine SlakoCont_getMPOrigins
+
 
 end module slakocont

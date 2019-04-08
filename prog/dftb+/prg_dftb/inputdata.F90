@@ -92,6 +92,10 @@ module inputdata_module
     !> SCC tolerance
     real(dp) :: sccTol      = 0.0_dp
 
+    logical       :: tMPole      = .false. ! wether Multipoles are used
+    logical       :: tMulDipole  = .false.
+    real(dp)      :: dipTol      = 0.0_dp  ! Dipole tolerance criterium
+
     !> Read starting charges from disc
     logical :: tReadChrg = .false.
 
@@ -454,10 +458,12 @@ module inputdata_module
     real(dp), allocatable :: skSelf(:, :)
     real(dp), allocatable :: skHubbU(:, :)
     real(dp), allocatable :: skOcc(:, :)
+    real(dp), allocatable :: fmOnSites(:, :)
     real(dp), allocatable :: mass(:)
 
     type(OSlakoCont), allocatable :: skHamCont
     type(OSlakoCont), allocatable :: skOverCont
+    type(OSlakoCont), allocatable  :: fmCont ! First moment of the overlap container
     type(ORepCont), allocatable :: repCont
     type(TOrbitals), allocatable :: orb
   end type slater

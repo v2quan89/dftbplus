@@ -23,6 +23,7 @@ module shift
   !> add shifts to a given Hamiltonian
   interface add_shift
     module procedure add_shift_atom
+    module procedure add_dipole_shift_atom
     module procedure add_shift_lshell
     module procedure add_shift_block
   end interface add_shift
@@ -105,6 +106,64 @@ contains
     end do
 
   end subroutine add_shift_atom
+
+  !!* Regular atomic shift (potential is only dependent on number of atoms)
+  !!* @param ham          DFTB Hamiltonian
+  !!* @param pos1         Position matrix, origin at first center.
+  !!* @param pos2         Position matrix, origin at second center.
+  !!* @param nNeighbour   Number of neighbours surrounding each atom.
+  !!* @param iNeighbour   List of neighbours for each atom.
+  !!* @param species      List of the species of each atom.
+  !!* @param orb Contains Information about the atomic orbitals in the system
+  !!* @param iPair        Indexing array for the Hamiltonian.
+  !!* @parma img2CentCell Index mapping atoms onto the central cell atoms.
+  !!* @param shift        Shift to add at atom sites
+  subroutine add_dipole_shift_atom(ham, posMtx1, posMtx2, nNeighbour, iNeighbour, &
+      &species, orb, iPair, nAtom, shift)
+    real(dp), intent(inout)     :: ham(:,:)
+    real(dp), intent(in)        :: posMtx1(:,:), posMtx2(:,:)
+    integer, intent(in)         :: nNeighbour(:)
+    integer, intent(in)         :: iNeighbour(0:,:)
+    integer, intent(in)         :: species(:)
+    type(TOrbitals), intent(in) :: orb
+    integer, intent(in)         :: iPair(0:,:)
+    integer, intent(in)         :: nAtom
+    real(dp), intent(in)        :: shift(:,-1:)
+
+    integer :: iAt1, iAt2, iOrig, iSp1, iSp2, nOrb1, nOrb2
+    integer :: iNeigh, iSpin, nSpin, ii
+
+    @:ASSERT(size(ham,dim=1)==size(posMtx1,dim=1))
+    @:ASSERT(all(shape(posMtx1)==shape(posMtx2)))
+    @:ASSERT(size(nNeighbour)==nAtom)
+    @:ASSERT(size(iNeighbour,dim=2)==nAtom)
+    @:ASSERT(size(species)>=maxval(iNeighbour))
+    @:ASSERT(size(iPair,dim=1)>=(maxval(nNeighbour)+1))
+    @:ASSERT(size(iPair,dim=2)==nAtom)
+    @:ASSERT(all(shape(shift)==(/nAtom,3/)))
+
+    nSpin = size(ham,dim=2)
+    @:ASSERT(nSpin == 1 .or. nSpin == 2 .or. nSpin == 4)
+
+    do iSpin = 1, nSpin
+      do iAt1 = 1, nAtom
+        iSp1 = species(iAt1)
+        nOrb1 = orb%nOrbSpecies(iSp1)
+        do iNeigh = 0, nNeighbour(iAt1)
+          iAt2 = iNeighbour(iNeigh, iAt1)
+          iSp2 = species(iAt2)
+          nOrb2 = orb%nOrbSpecies(iSp2)
+          iOrig = iPair(iNeigh, iAt1) + 1
+          do ii = iOrig, iOrig + nOrb2 * nOrb1 - 1
+            ham(ii,iSpin) = ham(ii,iSpin) + 0.5_dp * &
+                &(dot_product(posMtx1(ii,:), shift(iAt1,:)) + &
+                &dot_product(posMtx2(ii,:), shift(iAt2,:)))
+          end do
+        end do
+      end do
+    end do
+
+  end subroutine add_dipole_shift_atom
 
 
   !> l-dependent shift (potential is dependent on number of atom and l-shell)

@@ -27,7 +27,7 @@ module densitymatrix
   implicit none
   private
 
-  public :: makeDensityMatrix
+  public :: makeDensityMatrix, densityFluctuation
 
 #:if WITH_SCALAPACK
   public :: makeDensityMtxRealBlacs, makeDensityMtxCplxBlacs
@@ -49,9 +49,114 @@ module densitymatrix
     module procedure sp_energy_density_matrix_cmplx
   end interface makeDensityMatrix
 
+  !> Calculates the density fluctuation matrix (\Delta P) for use in the
+  !> multipole expansion
+  interface densityFluctuation
+    module procedure densityFluctuation_real
+  end interface
+
   real(dp), parameter :: arbitraryConstant = 0.1_dp
 
 contains
+
+  !> Calculates the density fluctuation matrix (\Delta P)
+  !> @param dRho  Contains the density fluctuation on exit
+  !> @param rho  The (current) density matrix
+  !> @param rho0  The initial density matrix
+  !> @param q0  Initial charges (per orbital)
+  !> @param iPair  Returns indices for rho
+  !> @param orb  Information about the atoms in the system
+  subroutine densityFluctuation_real(dRho, rho, rho0, q0, iPair, orb)
+    real(dp), allocatable, intent(out) :: dRho(:,:)
+    real(dp), intent(in) :: rho(:,:)
+    real(dp), allocatable, intent(inout) :: rho0(:,:)
+    real(dp), intent(in) :: q0(:,:,:)
+    integer, intent(in) :: iPair(0:,:)
+    type(TOrbitals), intent(in) :: orb
+
+    integer :: iAt, nAtom, nOrb, ind, iOrig, iDiag, iSpin
+
+    nAtom = size(orb%nOrbAtom)
+    iDiag = 1
+
+    if (.not. allocated(rho0)) then
+      call initialDensity_real(rho0, q0, orb)
+    end if
+    if (.not. allocated(dRho)) then
+      allocate(dRho(size(rho, dim=1), size(rho, dim=2)))
+    end if
+
+    dRho(:,:) = 0.0_dp
+    dRho(:,:) = rho(:,:)
+    do iSpin = 1, size(rho, dim=2)
+      do iAt = 1, nAtom
+        nOrb = orb%nOrbAtom(iAt)
+        iOrig = iPair(0,iAt)
+        ind = iOrig + 1
+        do while (ind < iOrig + nOrb**2)
+          dRho(ind,iSpin) = dRho(ind,iSpin) - rho0(iDiag, iSpin)
+          iDiag = iDiag + 1
+          ind = ind + nOrb + 1
+        end do
+      end do
+    end do
+
+  end subroutine densityFluctuation_real
+
+
+  !> Creates the initial density matrix (a set of free atoms)
+  !> @param rho0  Contains the initial density matrix on exit
+  !> @param q0  Initial charges (per orbital)
+  !> @param orb  Information about the atoms in the system
+  !> @note The initial density matrix is a diagonal matrix, so only the
+  !> diagonal elements are saved.
+  subroutine initialDensity_real(rho0, q0, orb)
+    real(dp), allocatable, intent(out) :: rho0(:,:)
+    real(dp), intent(in) :: q0(:,:,:)
+    type(TOrbitals), intent(in) :: orb
+
+    integer :: nAtom, iAt, nOrb, iSpin, nSpin, ind
+
+    nAtom = size(orb%nOrbAtom)
+    nSpin = size(q0, dim=3)
+    ind = 1
+
+    call allocateRho0(rho0, nSpin, orb)
+    !! Loop to fill the initial density matrix 
+    do iSpin = 1, nSpin
+      do iAt = 1, nAtom
+        nOrb = orb%nOrbAtom(iAt)
+        rho0(ind:ind+nOrb-1,iSpin) = q0(1:nOrb,iAt,iSpin)
+        ind = ind + nOrb
+      end do
+    end do
+      
+  end subroutine initialDensity_real
+
+
+
+  !> Allocates the initial density matrix to the length of Tr(rho) (only
+  !> diagonal elements).
+  !> @param rho0  The matrix that will be allocated
+  !> @param nSpin  Number of needen spins
+  !> @param orb  Information about the atoms in the system
+  subroutine allocateRho0(rho0, nSpin, orb)
+    real(dp), allocatable, intent(out) :: rho0(:,:)
+    integer, intent(in) :: nSpin
+    type(TOrbitals), intent(in) :: orb
+
+    integer :: nElem, iAt, nAtom
+
+    nAtom = size(orb%nOrbAtom)
+    nElem = 0
+
+    do iAt = 1, nAtom
+      nElem = nElem + orb%nOrbAtom(iAt)
+    end do
+
+    allocate(rho0(nElem, nSpin))
+    
+  end subroutine allocateRho0
 
 
   !> Make a regular density matrix for the real wave-function case

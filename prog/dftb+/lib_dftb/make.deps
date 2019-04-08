@@ -128,13 +128,18 @@ forces.o = forces.o $(_mod_commontypes) $(common.fypp) $(_mod_schedule) $(_mod_e
 _mod_forces: forces.o
 _mod_forces = $(forces.o)
 
+multipole.o: _mod_commontypes common.fypp  _mod_coulomb _mod_blasroutines _mod_shortgamma _mod_message _mod_periodic _mod_accuracy
+multipole.o = multipole.o $(_mod_commontypes) $(common.fypp) $(_mod_coulomb) $(_mod_blasroutines) $(_mod_shortgamma) $(_mod_message) $(_mod_periodic) $(_mod_accuracy)
+_mod_multipole: multipole.o
+_mod_multipole = $(multipole.o)
+
 h5correction.o: _mod_vdwdata common.fypp _mod_accuracy _mod_message
 h5correction.o = h5correction.o $(_mod_vdwdata) $(common.fypp) $(_mod_accuracy) $(_mod_message)
 _mod_h5correction: h5correction.o
 _mod_h5correction = $(h5correction.o)
 
-nonscc.o: _mod_commontypes common.fypp _mod_schedule _mod_message _mod_environment _mod_assert _mod_sk _mod_accuracy _mod_slakocont
-nonscc.o = nonscc.o $(_mod_commontypes) $(common.fypp) $(_mod_schedule) $(_mod_message) $(_mod_environment) $(_mod_assert) $(_mod_sk) $(_mod_accuracy) $(_mod_slakocont)
+nonscc.o: _mod_commontypes common.fypp _mod_schedule _mod_message _mod_environment _mod_assert _mod_sknew _mod_accuracy _mod_slakocont
+nonscc.o = nonscc.o $(_mod_commontypes) $(common.fypp) $(_mod_schedule) $(_mod_message) $(_mod_environment) $(_mod_assert) $(_mod_sknew) $(_mod_accuracy) $(_mod_slakocont)
 _mod_nonscc: nonscc.o
 _mod_nonscc = $(nonscc.o)
 
@@ -157,6 +162,11 @@ populations.o: _mod_commontypes common.fypp _mod_constants _mod_assert _mod_peri
 populations.o = populations.o $(_mod_commontypes) $(common.fypp) $(_mod_constants) $(_mod_assert) $(_mod_periodic) $(_mod_accuracy)
 _mod_populations: populations.o
 _mod_populations = $(populations.o)
+
+positionmatrix.o: _mod_commontypes common.fypp  _mod_transformation _mod_sk _mod_accuracy _mod_slakocont
+positionmatrix.o = positionmatrix.o $(_mod_commontypes) $(common.fypp) $(_mod_transformation) $(_mod_sk) $(_mod_accuracy) $(_mod_slakocont)
+_mod_positionmatrix: positionmatrix.o
+_mod_positionmatrix = $(positionmatrix.o)
 
 potentials.o: _mod_accuracy _mod_commontypes common.fypp _mod_assert
 potentials.o = potentials.o $(_mod_accuracy) $(_mod_commontypes) $(common.fypp) $(_mod_assert)
@@ -215,6 +225,11 @@ sk.o = sk.o $(_mod_accuracy) $(_mod_commontypes) $(common.fypp) $(_mod_assert)
 _mod_sk: sk.o
 _mod_sk = $(sk.o)
 
+sknew.o: _mod_accuracy _mod_commontypes common.fypp _mod_assert
+sknew.o = sknew.o $(_mod_accuracy) $(_mod_commontypes) $(common.fypp) $(_mod_assert)
+_mod_sknew: sknew.o
+_mod_sknew = $(sknew.o)
+
 slakocont.o: _mod_accuracy _mod_slakoeqgrid common.fypp _mod_assert
 slakocont.o = slakocont.o $(_mod_accuracy) $(_mod_slakoeqgrid) $(common.fypp) $(_mod_assert)
 _mod_slakocont: slakocont.o
@@ -268,4 +283,9 @@ vdwdata.o: _mod_message _mod_accuracy _mod_constants _mod_charmanip
 vdwdata.o = vdwdata.o $(_mod_message) $(_mod_accuracy) $(_mod_constants) $(_mod_charmanip)
 _mod_vdwdata: vdwdata.o
 _mod_vdwdata = $(vdwdata.o)
+
+transformation.o: _mod_accuracy _mod_commontypes common.fypp  _mod_message
+transformation.o = transformation.o $(_mod_accuracy) $(_mod_commontypes) $(common.fypp)  $(_mod_message)
+_mod_transformation: transformation.o
+_mod_transformation = $(transformation.o)
 

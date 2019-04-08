@@ -17,9 +17,9 @@ module slakoeqgrid
   implicit none
   private
 
-  public :: OSlakoEqGrid, init
+  public :: OSlakoEqGrid, OOrigins, init
   public :: getSKIntegrals, getNIntegrals, getCutoff
-  public :: skEqGridOld, skEqGridNew
+  public :: skEqGridOld, skEqGridNew, getMPOrigins
 
 
   !> Represents an equally spaced Slater-Koster grid
@@ -33,10 +33,34 @@ module slakoeqgrid
     logical :: tInit = .false.
   end type OSlakoEqGrid
 
+  !!* Origin vectors of SlakoEqGrid integrals for the multipole expansion
+  !!* @note I don't really know why I put that here, I should move this some
+  !!* other place at some point.
+  type OOrigins
+    private
+    integer :: nInteg ! Number of integrals of the multipole table
+    integer :: dims ! Number of dimensions of each origin vector (should be 3)
+    real(dp), pointer :: origin(:,:) ! Table origin(dims, nInteg)
+    integer, pointer :: center(:) ! Center table
+    logical :: tInit = .false.
+  end type OOrigins
+
+  !!* On-site Integrals for the multipole expansion
+  !!* @note I don't really know why I put that here, I should move this some
+  !!* other place at some point.
+  ! type OOnSites
+  !   private
+  !   integer :: nInteg ! Number of on-site integrals in the multipole table
+  !   real(dp), pointer :: onSites(:) ! On-Site integrals
+  !   logical :: tInit = .false.
+  ! end type OOnSites
+
 
   !> Initialises SlakoEqGrid.
   interface init
     module procedure SlakoEqGrid_init
+    module procedure Origins_init
+    ! module procedure OnSites_init
   end interface init
 
 
@@ -49,7 +73,13 @@ module slakoeqgrid
   !> Returns the number of integrals the table contains
   interface getNIntegrals
     module procedure SlakoEqGrid_getNIntegrals
+    module procedure Origins_getNIntegrals
   end interface getNIntegrals
+
+  !!* Returns multipole origins for a given distance
+  interface getMPOrigins
+    module procedure Origins_getMPOrigins
+  end interface getMPOrigins
 
 
   !> Returns the cutoff of the interaction.
@@ -122,6 +152,49 @@ contains
   end subroutine SlakoEqGrid_init
 
 
+  !!* Initialises Origin Vectors.
+  !!* @param self Origins instance.
+  !!* @param mpoleOrigins Origin vector table.
+  !!* @param mpoleCenters Multipole centers table
+  subroutine Origins_init(self, mpoleOrigins, mpoleCenters)
+    type(OOrigins), intent(out) :: self
+    real(dp), intent(in) :: mpoleOrigins(:,:)
+    integer, intent(in) :: mpoleCenters(:)
+
+    @:ASSERT(.not. self%tInit)
+    @:ASSERT(size(mpoleOrigins, dim=2) == size(mpoleCenters))
+
+    self%nInteg = size(mpoleCenters)
+    self%dims = size(mpoleOrigins, dim=1)
+    allocate(self%origin(self%dims, self%nInteg))
+    allocate(self%center(self%nInteg))
+    self%origin(:,:) = mpoleOrigins(:,:)
+    self%center(:) = mpoleCenters(:)
+    self%tInit = .true.
+
+  end subroutine Origins_init
+
+
+
+  !!* Initialises on-site integrals
+  !!* @param self On-site integral instance.
+  !!* @param table Table containing the integrals
+  ! subroutine OnSites_init(self, table)
+  !   type(OOnSites), intent(out) :: self
+  !   real(dp), intent(in) :: table(:)
+
+  !   @:ASSERT(.not. self%tInit)
+
+  !   self%nInteg = size(table, dim=2)
+  !   INITALLOCATE_PARR(self%onSites, (self%nInteg))
+  !   self%onSites(:) = table(:)
+  !   self%tInit = .true.
+
+  ! end subroutine OnSites_init
+
+
+
+
   !> Returns the integrals for a given distance.
   subroutine SlakoEqGrid_getSKIntegrals(self, sk, dist)
 
@@ -147,6 +220,46 @@ contains
   end subroutine SlakoEqGrid_getSKIntegrals
 
 
+
+  !!* Returns the multipole origin vectors for a given distance.
+  !!* @param self SlakoEqGrid instance.
+  !!* @param origVecs Contains the interpolated integrals on exit
+  !!* @param dist Distance for which the integrals should be interpolated.
+  subroutine Origins_getMPOrigins(self, origVecs, centers, dist)
+    type(OOrigins), intent(in) :: self
+    real(dp), intent(out) :: origVecs(:,:)
+    integer, intent(out) :: centers(:)
+    real(dp), intent(in) :: dist
+
+    @:ASSERT(self%tInit)
+    @:ASSERT(self%dims == 3)
+    @:ASSERT(size(origVecs, dim=2) >= self%nInteg)
+    @:ASSERT(size(centers) >= self%nInteg)
+    @:ASSERT(dist >= 0.0_dp)
+
+    origVecs(:,1:size(self%origin, dim=2)) = self%origin(:,:)
+    centers(1:size(self%center)) = self%center(:)
+
+  end subroutine Origins_getMPOrigins
+
+
+
+  !!* Returns the on-site integrals.
+  !!* @param self SlakoEqGrid instance.
+  !!* @param onSites Contains the on-site integrals on exit
+  ! subroutine OnSites_getIntegrals(self, onSites)
+  !   type(OOrigins), intent(in) :: self
+  !   real(dp), intent(out) :: onSites(:)
+
+  !   @:ASSERT(self%tInit)
+  !   @:ASSERT(size(origVecs) >= self%nInteg)
+
+  !   onSites(:) = self%onSites(:)
+
+  ! end subroutine OnSites_getIntegrals
+
+
+
   !> Returns the number of intgrals the table contains
   function SlakoEqGrid_getNIntegrals(self) result(nInt)
 
@@ -159,6 +272,19 @@ contains
     nInt = self%nInteg
 
   end function SlakoEqGrid_getNIntegrals
+
+  !!* Returns the number of integrals the table contains
+  !!* @param self Origins instance.
+  !!* @return Number of integrals.
+  function Origins_getNIntegrals(self) result(nInt)
+    type(OOrigins), intent(in) :: self
+    integer :: nInt
+
+    nInt = self%nInteg
+
+  end function Origins_getNIntegrals
+
+
 
 
   !> Returns the cutoff of the interaction.

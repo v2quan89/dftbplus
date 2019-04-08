@@ -12,7 +12,8 @@
 module nonscc
   use assert
   use accuracy, only : dp
-  use sk
+  !use sk
+  use sknew
   use slakocont
   use commontypes
   use message
@@ -21,7 +22,7 @@ module nonscc
   implicit none
   private
 
-  public :: buildH0, buildS
+  public :: buildH0, buildS, sparseHSPrime
   public :: NonSccDiff, NonSccDiff_init
   public :: diffTypes
 
@@ -197,6 +198,86 @@ contains
 
   end subroutine NonSccDiff_init
 
+  !!* Calculates the full derivative of both Hamiltonian or overlap with
+  !!* with respect to internuclear distance in sparse form.
+  !!* @param HPrime Contains the sparse derivative matrix on exit.
+  !!* @param SPrime Contains the sparse derivative matrix on exit.
+  !!* @param skHamCont Container for SK Hamiltonian integrals
+  !!* @param skOverCont Container for SK Hamiltonian integrals
+  !!* @param coords list of all atomic coordinates
+  !!* @param species list of all atomic species
+  !!* @param iNeighbor neighbor list for atoms
+  !!* @param nNeighbor number of neighbors of each atom
+  !!* @param nAtom number of real atoms
+  !!* @param iPair indexing array for the Hamiltonian
+  !!* @param orb Information about the orbitals
+  !!* @note No periodic boundary conditions supported.
+  subroutine sparseHSPrime(HPrime, SPrime, skHamCont, skOverCont, coords, &
+      &species, iNeighbor, nNeighbor, iPair, orb)
+    real(dp), intent(out) :: HPrime(:,-1:), SPrime(:,-1:)
+    type(OSlakoCont) :: skHamCont, skOverCont
+    real(dp), intent(in) :: coords(:,:)
+    integer, intent(in) :: species(:)
+    integer, intent(in) :: iNeighbor(0:,:)
+    integer, intent(in) :: nNeighbor(:)
+    integer, intent(in) :: iPair(0:,:)
+    type(TOrbitals), intent(in) :: orb
+
+    integer  :: iOrig, iEnd, nAtom, nOrb1, nOrb2
+    integer  :: iNeigh, iAt1, iAt2, iSp1, iSp2, iCC
+
+    real(dp) :: hPrimeTmp(orb%mOrb,orb%mOrb,3)
+    real(dp) :: sPrimeTmp(orb%mOrb,orb%mOrb,3)
+    real(dp) :: tmpH(size(HPrime, dim=1), 3), tmpS(size(SPrime, dim=1), 3)
+
+    nAtom = size(orb%nOrbAtom)
+    @:ASSERT(size(HPrime, dim=2) == 3)
+    @:ASSERT(size(SPrime, dim=2) == size(HPrime, dim=2))
+    !! I couldn't come up with a assertion for the size of dim=1 of matPrime!
+    ! Approximative size check.
+    @:ASSERT(size(HPrime, dim=1) == maxval(iPair)) 
+    ! Approximative size check.
+    @:ASSERT(size(SPrime, dim=1) == maxval(iPair)) 
+
+    HPrime(:,:) = 0.0_dp
+    SPrime(:,:) = 0.0_dp
+    tmpH(:,:) = 0.0_dp
+    tmpS(:,:) = 0.0_dp
+
+    do iAt1 = 1, nAtom
+      iSp1 = species(iAt1)
+      nOrb1 = orb%nOrbSpecies(iSp1)
+      do iNeigh = 1, nNeighbor(iAt1)
+        iAt2 = iNeighbor(iNeigh, iAt1)
+        iSp2 = species(iAt2)
+        if (iAt1 /= iAt2) then
+          nOrb2 = orb%nOrbSpecies(iSp2)
+          iOrig = iPair(iNeigh,iAt1) + 1
+          iEnd = iOrig + nOrb2 * nOrb1 - 1
+          !call H0Sprime(hPrimeTmp, sPrimeTmp, skHamCont, skOverCont, coords, species, iAt1, iAt2, orb)
+          call getFirstDerivRichardson(hPrimeTmp, skHamCont, coords, species, iAt1, iAt2, orb)
+          call getFirstDerivRichardson(sPrimeTmp, skOverCont, coords, species, iAt1, iAt2, orb)
+          do iCC = 1, 3
+            tmpH(iOrig:iEnd,iCC) = reshape(hPrimeTmp(1:nOrb2,1:nOrb1,iCC), &
+                &(/ nOrb2 * nOrb1 /))
+            tmpS(iOrig:iEnd,iCC) = reshape(sPrimeTmp(1:nOrb2,1:nOrb1,iCC), &
+                &(/ nOrb2 * nOrb1 /))
+          end do
+        end if
+      enddo
+    enddo
+
+    !! Reordering of coordinates into -1:1 scheme
+    HPrime(:,-1) = tmpH(:,2)
+    HPrime(:,0) = tmpH(:,3)
+    HPrime(:,1) = tmpH(:,1)
+    SPrime(:,-1) = tmpS(:,2)
+    SPrime(:,0) = tmpS(:,3)
+    SPrime(:,1) = tmpS(:,1)
+
+  end subroutine sparseHSPrime
+
+
   !> Calculates the first derivative of H0 or S.
   subroutine getFirstDeriv(this, deriv, skCont,coords, species, atomI, atomJ, orb)
 
@@ -310,7 +391,7 @@ contains
         dist = sqrt(sum(vect**2))
         vect(:) = vect / dist
         call getSKIntegrals(skCont, interSK, dist, iSp1, iSp2)
-        call rotateH0(tmp, interSK, vect(1), vect(2), vect(3), iSp1, iSp2, orb)
+        call rotateH0(interSK, vect(1), vect(2), vect(3), iSp1, iSp2, orb, tmp)
         out(ind + 1 : ind + nOrb2 * nOrb1) = reshape(tmp(1:nOrb2, 1:nOrb1), [nOrb2 * nOrb1])
       end do
     end do
@@ -351,7 +432,7 @@ contains
         dist = sqrt(sum(vect**2))
         vect(:) = vect / dist
         call getSKIntegrals(skCont, interSk, dist, sp1, sp2)
-        call rotateH0(tmp(:,:,ii,jj), interSk, vect(1), vect(2), vect(3), sp1, sp2, orb)
+        call rotateH0(interSk, vect(1), vect(2), vect(3), sp1, sp2, orb, tmp(:,:,ii,jj))
       end do
     end do
 
@@ -402,7 +483,7 @@ contains
         dist = sqrt(sum(vect(:)**2))
         vect(:) = vect / dist
         call getSKIntegrals(skCont, interSk, dist, sp1, sp2)
-        call rotateH0(tmp(:,:,kk), interSk, vect(1), vect(2), vect(3), sp1, sp2, orb)
+        call rotateH0(interSk, vect(1), vect(2), vect(3), sp1, sp2, orb, tmp(:,:,kk))
       end do
 
       ! row number
@@ -428,7 +509,7 @@ contains
           dist = sqrt(sum(vect**2))
           vect(:) = vect / dist
           call getSKIntegrals(skCont, interSk, dist, sp1, sp2)
-          call rotateH0(tmp(:,:,kk), interSk, vect(1), vect(2), vect(3), sp1, sp2, orb)
+          call rotateH0(interSk, vect(1), vect(2), vect(3), sp1, sp2, orb, tmp(:,:,kk))
         end do
         where (.not.tConverged)
           dd(:,:,0,ii) = (tmp(:,:,2) - tmp(:,:,1)) / (2.0_dp * hh)
@@ -508,7 +589,7 @@ contains
             vect(:) = vect / dist
 
             call getSKIntegrals(skCont, interSk, dist, sp1, sp2)
-            call rotateH0(tmp,interSk,vect(1),vect(2),vect(3),sp1,sp2,orb)
+            call rotateH0(interSk,vect(1),vect(2),vect(3),sp1,sp2,orb,tmp)
             deriv(:,:,jj,ii) = deriv(:,:,jj,ii) + real(kk * ll, dp) * tmp
           end do
         end do
@@ -523,7 +604,7 @@ contains
         vect(:) = vect / dist
 
         call getSKIntegrals(skCont, interSk, dist, sp1, sp2)
-        call rotateH0(tmp,interSk,vect(1),vect(2),vect(3),sp1,sp2,orb)
+        call rotateH0(interSk,vect(1),vect(2),vect(3),sp1,sp2,orb,tmp)
         deriv(:,:,ii,ii) = deriv(:,:,ii,ii) + stencil(jj) * tmp
 
       end do

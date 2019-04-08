@@ -107,6 +107,9 @@ module taggedoutput
   !> External electric field
   character(*), parameter, public :: tag_externfield = 'external_efield'
 
+  character(*), parameter, public :: tag_egyDipole  = 'mpole_dipole_energy'
+  character(*), parameter, public :: tag_mpDipoles  = 'mpole_atomic_dipoles'
+
   ! general format strings
 
   !> real string format

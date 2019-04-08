@@ -16,10 +16,11 @@ module oldskdata
   use repspline, only : TRepSplineIn
   use reppoly, only : TRepPolyIn
   use message
+  use fileid 
   implicit none
   private
 
-  public :: TOldSKData, readFromFile, readSplineRep
+  public :: TOldSKData, TFirstMomData, readFromFile, readSplineRep
 
 
   !> Represents the Slater-Koster data in an SK file.
@@ -51,9 +52,20 @@ module oldskdata
   end type TOldSKData
 
 
+  !!* First moment of the overlap data type.
+  type TFirstMomData
+    real(dp) :: dist                          !* Grid seperation
+    integer :: nGrid                          !* Number of grid points
+    integer, pointer :: center                !* Center of dipole origin
+    real(dp) :: origVec(3) = 0.0_dp           !* Origin of the dipole vector
+    real(dp) :: onSites(6)                    !* On-site integral table
+    real(dp), pointer :: firstMom(:,:)        !* Table for the first moment
+  end type TFirstMomData
+
   !> Reads the data from an SK-file.
   interface readFromFile
     module procedure OldSKData_readFromFile
+    module procedure FirstMomData_readFromFile
   end interface readFromFile
 
 
@@ -69,6 +81,7 @@ module oldskdata
   !> nr. of ints. in old SK-file
   integer, parameter :: nSKInterOld = 10
 
+  integer, parameter :: nFMInter = 17     !* Number of first moment integrals
 
   !> Mapping between old (spd) and new (spdf) interactions in the SK-table
   integer, parameter :: iSKInterOld(nSKInterOld) &
@@ -253,6 +266,60 @@ contains
     end do
 
   end subroutine OldSKData_readsplinerep
+
+
+  !!* Reads the first moment table from a 1m-file.
+  !!* @param fmData Contains the content of the file on exit
+  !!* @param fileName Name of the file to read the data from
+  !!* @param Wether the file is a homoatomic one
+  !!* @note Used by: prg_dftb/parser.F90 -- readFMFiles
+  !!* @note Uses: checkIoError (wherever it is)
+  subroutine FirstMomData_readFromFile(fmData, fileName, homo)
+    type(TFirstMomData), intent(out) :: fmData
+    character(len=*), intent(in) :: fileName
+    logical, intent(in) :: homo
+
+    integer, save :: file = -1
+    integer :: ii, iGrid
+    integer :: iostat
+    !! -> nFMInter: module parameter (see top)
+
+    if (file == -1) then
+      file = getFileId()
+    end if
+    open(file, file=fileName, status="old", action="read", iostat=iostat)
+    call checkIoError(iostat, fileName, "Unable to open file")
+    rewind(file)
+
+    !! Parsing the first data lines
+    if (.not. associated(fmData%center)) then
+      allocate(fmData%center)
+    end if
+    read (file,*, iostat=iostat) fmData%dist, fmData%nGrid, fmData%center
+    !! Caution: SKData has nGrid = nGrid - 1 for a distance of 0.0
+    !! First moment files start the at the first increment, not zero.
+    call checkIoError(iostat, fileName, "Unable to read 1st data line")
+    read (file,*, iostat=iostat) (fmData%origVec(ii), ii = 1, 3)
+    call checkIoError(iostat, fileName, "Unable to read 2nd data line")
+    if (homo) then
+      !! Special 3rd line for homoatomic files: On-site first moment integrals.
+      read (file,*, iostat=iostat) (fmData%onSites(ii), ii = 1, 6)
+      call checkIoError(iostat, fileName, "Unable to read 3rd data line")
+    end if
+
+    !! Allocate and initialize first moment table
+    allocate(fmData%firstMom(fmData%nGrid, nFMInter))
+    fmData%FirstMom(:,:) = 0.0_dp
+    !! Now we read all H- and S-table elements into the grid
+    do iGrid = 1, fmData%nGrid
+      read(file,*, iostat=iostat) &
+          &(fmData%firstMom(iGrid, ii), ii = 1, nFMInter)
+      call checkIoError(iostat, fileName, "Reading error for integrals")
+    end do
+
+    close(file)
+
+  end subroutine FirstMomData_readFromFile
 
 
   !> Checks for IO errors and prints message.

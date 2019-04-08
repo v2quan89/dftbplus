@@ -79,6 +79,8 @@ module main
   use negf_int
   use poisson_init
 #:endif
+  use PositionMatrix ! First moment of the overlag
+  use Multipole ! Multipole expansion
 
 
   implicit none
@@ -172,7 +174,7 @@ contains
     integer :: minSCCIter
 
     !> label for k-point and spin cases
-    integer :: iKS
+    integer :: iKS, iSpin
 
     !> if scc/geometry driver should be stopped
     logical :: tStopSCC, tStopDriver
@@ -241,7 +243,11 @@ contains
     #:endif
 
       if (tSccCalc) then
-        call reset(pChrgMixer, nMixElements)
+        if (tMPole) then
+          call reset(pChrgMixer, nMixElements + 3 * nAtom)
+        else
+          call reset(pChrgMixer, nMixElements)
+        end if
       end if
 
       if (electronicSolver%isElsiSolver .and. .not. tLargeDenseMatrices) then
@@ -254,6 +260,32 @@ contains
           & species, iSparseStart, orb)
       call buildS(env, over, skOverCont, coord, nNeighbourSK, neighbourList%iNeighbour, species,&
           & iSparseStart, orb)
+
+
+      !! Build multipole expansion matrices
+      if (tMPole .or. tMulDipole) then
+        call allocatePosMat(posMtx1, neighbourList%iNeighbour, nNeighbourSK, species, orb)
+        call allocatePosMat(posMtx2, neighbourList%iNeighbour, nNeighbourSK, species, orb)
+        call buildPosMat(posMtx1, posMtx2, skOverCont, fmOnSites, fmCont, coord, &
+            &nNeighbourSK, neighbourList%iNeighbour, iSparseStart, species, orb)
+        if (allocated(sparseHPrime)) then
+          deallocate(sparseHPrime)
+        end if
+        if (allocated(sparseSPrime)) then
+          deallocate(sparseSPrime)
+        end if
+        allocate(sparseHPrime(size(ham, dim=1), -1:1))
+        allocate(sparseSPrime(size(ham, dim=1), -1:1))
+        if (allocated(pos1Prime)) then
+          deallocate(pos1Prime)
+        end if
+        if (allocated(pos2Prime)) then
+          deallocate(pos2Prime)
+        end if
+        allocate(pos1Prime(size(posMtx1, dim=1), 3, 3))
+        allocate(pos2Prime(size(posMtx1, dim=1), 3, 3))
+      end if
+
       call env%globalTimer%stopTimer(globalTimers%sparseH0S)
 
       if (tSetFillingTemp) then
@@ -361,6 +393,53 @@ contains
           call getMullikenPopulation(rhoPrim, over, orb, neighbourList, nNeighbourSK, img2CentCell,&
               & iSparseStart, qOutput, iRhoPrim, qBlockOut, qiBlockOut)
         end if
+        
+      !! Mulliken-analogue dipole analysis for multipole expansion
+      if (tMPole .or. tMulDipole) then
+        dOutput(:,:) = 0.0_dp
+        do iSpin = 1, nSpin
+          call densityFluctuation(dRho, rhoPrim, rho0, q0, iSparseStart, orb)
+          call dipole(dOutput, posMtx1, posMtx2, dRho(:,iSpin), orb, &
+              &neighbourList%iNeighbour, nNeighbourSK, iSparseStart)
+        end do
+      end if
+        if (tMPole) then
+          call updateCharges(mpole, sum(qOutput(:,:,1), dim=1), &
+              &sum(q0(:,:,1), dim=1))
+          call updateDipoles(mpole, neighbourList%iNeighbour, dOutput)
+        end if
+        !! Update Multipole charges and dipoles
+        if (tMPole) then
+          call updateCharges(mpole, sum(qInput(:,:,1), dim=1), &
+              &sum(q0(:,:,1), dim=1))
+          call updateDipoles(mpole, neighbourList%iNeighbour, dInput)
+          call getShifts(mpole, shiftMPole1(:,1), shiftMPole2)
+        end if
+
+
+      ! if (tMPole .and. iSCCIter > 1) then
+      !   ALLOCATE_(hamTmp, (size(ham, dim=1)))
+      !   hamTmp(:) = ham(:,1)
+      !   call add_shift(ham, over, nNeighbourSK, neighbourList%iNeighbour, &
+      !       &species, orb, iSparseStart, nAtom, img2CentCell, shiftMPole1)
+      !   call add_shift(ham, pos1, pos2, nNeighbourSK, neighbourList%iNeighbour, &
+      !       &species, orb, iSparseStart, nAtom, shiftMPole2)
+      !   hamTmp(:) = ham(:,1) - hamTmp(:)
+      !   print *, "Dipole Hamiltonian Shifts"
+      !   print *, hamTmp(:)
+      !   print *, "Charges"
+      !   print *, qInput
+      !   DEALLOCATE_(hamTmp)
+      ! end if
+
+      if (tMPole .and. iSCCIter > 1) then
+        call add_shift(ham, over, nNeighbourSK, neighbourList%iNeighbour, &
+            &species, orb, iSparseStart, nAtom, img2CentCell, shiftMPole1)
+        call add_shift(ham, posMtx1, posMtx2, nNeighbourSK, neighbourList%iNeighbour, &
+            &species, orb, iSparseStart, nAtom, shiftMPole2)
+      end if
+
+
 
         #:if WITH_TRANSPORT
           ! Override charges with uploaded contact charges
@@ -394,12 +473,21 @@ contains
             & iSparseStart, cellVol, extPressure, TS, potential, energy, thirdOrd, qBlockOut,&
             & qiBlockOut, nDftbUFunc, UJ, nUJ, iUJ, niUJ, xi, iAtInCentralRegion, tFixEf, Ef)
 
+        if (tMPole) then
+          call getEnergyPerAtom(mpole, energy%atomDipole)
+          energy%dipoles = sum(energy%atomDipole)
+          ! call getEnergy(mpole, energy%dipoles)
+          ! energy%atomDipole(:) = 0.0_dp
+          ! energy%dipoles = 0.0_dp
+        end if
+
+
         tStopScc = hasStopFile(fStopScc)
 
         ! Mix charges Input/Output
         if (tSccCalc) then
           call getNextInputCharges(env, pChrgMixer, qOutput, qOutRed, orb, nIneqOrb, iEqOrbitals,&
-              & iGeoStep, iSccIter, minSccIter, maxSccIter, sccTol, tStopScc, tDftbU, tReadChrg,&
+              & iGeoStep, iSccIter, minSccIter, maxSccIter, sccTol, tStopScc, tDftbU, tReadChrg, tMPole,&
               & qInput, qInpRed, sccErrorQ, tConverged, qBlockOut, iEqBlockDftbU, qBlockIn,&
               & qiBlockOut, iEqBlockDftbULS, species0, nUJ, iUJ, niUJ, qiBlockIn)
 
@@ -408,6 +496,11 @@ contains
             call printSccHeader()
           end if
           call printSccInfo(tDftbU, iSccIter, energy%Eelec, diffElec, sccErrorQ)
+
+          if (tMPole) then
+            write(*,"(' ',A5,A18,A18,A18,A18)") "iSCC", " Total electronic ", &
+                & "  Diff electronic ", "     SCC error    ", "    Dipole Error  "
+          end if 
 
           if (tNegf) then
             call printBlankLine()
@@ -1078,6 +1171,10 @@ contains
     if (allocated(thirdOrd)) then
       call thirdOrd%updateCoords(neighbourList, species)
     end if
+
+    !if (tMPole) then
+    !  call updateCoords(mpole, coord, neighbourList, species)
+    !end if
 
   end subroutine handleCoordinateChange
 
@@ -3170,9 +3267,9 @@ contains
     end if
 
     energy%Eelec = energy%EnonSCC + energy%ESCC + energy%Espin + energy%ELS + energy%Edftbu&
-        & + energy%Eext + energy%e3rd
+        & + energy%Eext + energy%e3rd + energy%dipoles
     energy%atomElec(:) = energy%atomNonSCC + energy%atomSCC + energy%atomSpin + energy%atomDftbu&
-        & + energy%atomLS + energy%atomExt + energy%atom3rd
+        & + energy%atomLS + energy%atomExt + energy%atom3rd + energy%atomDipole
     energy%atomTotal(:) = energy%atomElec + energy%atomRep + energy%atomDisp
     energy%Etotal = energy%Eelec + energy%Erep + energy%eDisp
     energy%EMermin = energy%Etotal - sum(TS)
@@ -3218,8 +3315,8 @@ contains
 
   !> Returns input charges for next SCC iteration.
   subroutine getNextInputCharges(env, pChrgMixer, qOutput, qOutRed, orb, nIneqOrb, iEqOrbitals,&
-      & iGeoStep, iSccIter, minSccIter, maxSccIter, sccTol, tStopScc, tDftbU, tReadChrg, qInput,&
-      & qInpRed, sccErrorQ, tConverged, qBlockOut, iEqBlockDftbU, qBlockIn, qiBlockOut,&
+      & iGeoStep, iSccIter, minSccIter, maxSccIter, sccTol, tStopScc, tDftbU, tReadChrg, tMPole,&
+      &  qInput, qInpRed, sccErrorQ, tConverged, qBlockOut, iEqBlockDftbU, qBlockIn, qiBlockOut,&
       & iEqBlockDftbuLS, species0, nUJ, iUJ, niUJ, qiBlockIn)
 
     !> Environment settings
@@ -3266,6 +3363,9 @@ contains
 
     !> Were intial charges read from disc?
     logical, intent(in) :: tReadChrg
+
+    !> MPole 
+    logical, intent(in) :: tMPole
 
     !> Resulting input charges for next SCC iteration
     real(dp), intent(inout) :: qInput(:,:,:)
@@ -3317,6 +3417,44 @@ contains
         & qiBlockOut, iEqBlockDftbuLS)
     qDiffRed = qOutRed - qInpRed
     sccErrorQ = maxval(abs(qDiffRed))
+
+        !! Also mix dipoles by adding the values to the mixing vector.
+        !if (tMPole) then
+        !  !! Indexes where the different multipole properties start.
+        !  !! 1: Dipoles in x-Direction per Atom
+        !  !! 2: Dipoles in y-Direction per Atom
+        !  !! 3: Dipoles in z-Direction per Atom
+        !  !! 4: Net charges per Atom
+        !  !! 5: Total size of the mixing vector.
+        !  iMix(1:5) = [1, nAtom + 1, 2 * nAtom + 1, 3 * nAtom + 1, &
+        !      &3 * nAtom + size(qDiffRed)]
+        !  if (allocated(mixVecInp) .and. allocated(mixVecDiff)) then
+        !    if (size(mixVecInp) < iMix(5) .or. &
+        !        &size(mixVecDiff) < iMix(5)) then
+        !      deallocate(mixVecInp)
+        !      deallocate(mixVecDiff)
+        !      allocate(mixVecInp(iMix(5)))
+        !      allocate(mixVecDiff(iMix(5)))
+        !    end if
+        !  else
+        !    allocate(mixVecInp(iMix(5)))
+        !    allocate(mixVecDiff(iMix(5)))
+        !  end if
+        !  mixVecDiff(iMix(4):iMix(5)) = qDiffRed(:)
+        !  mixVecInp(iMix(4):iMix(5)) = qInpRed(:)
+        !  do iMM = 1, 3
+        !    mixVecDiff(iMix(iMM):iMix(iMM+1)-1) = dOutput(:,iMM) - dInput(:,iMM)
+        !    mixVecInp(iMix(iMM):iMix(iMM+1)-1) = dInput(:,iMM)
+        !  end do
+        !  sccErrorD = maxval(mixVecDiff(iMix(1):iMix(4)-1))
+        !  tConverged = (sccErrorQ < sccTol) .and. &
+        !      & (iSCCiter >= minSCCIter .or. tReadChrg) .and. &
+        !      & (sccErrorD < dipTol)
+        !else
+        !  tConverged = (sccErrorQ < sccTol) .and. &
+        !      & (iSCCiter >= minSCCIter .or. tReadChrg)
+        !end if
+
     tConverged = (sccErrorQ < sccTol)&
         & .and. (iSCCiter >= minSCCIter .or. tReadChrg .or. iGeoStep > 0)
     if ((.not. tConverged) .and. (iSCCiter /= maxSccIter .and. .not. tStopScc)) then
@@ -3333,7 +3471,18 @@ contains
           end if
         end if
       else
-        call mix(pChrgMixer, qInpRed, qDiffRed)
+            if (tMPole) then
+            ! call mix(pChrgMixer, mixVecInp, mixVecDiff)
+            ! qInpRed = mixVecInp(iMix(4):iMix(5))
+            ! do iMM = 1, 3
+            !   dInput(1:nAtom,iMM) = &
+            !       &mixVecInp(iMix(iMM):iMix(iMM+1)-1)
+            ! end do
+            ! deallocate(mixVecInp)
+            ! deallocate(mixVecDiff)
+            else
+              call mix(pChrgMixer, qInpRed, qDiffRed)
+            end if
       #:if WITH_MPI
         ! Synchronise charges in order to avoid mixers that store a history drifting apart
         call mpifx_allreduceip(env%mpi%globalComm, qInpRed, MPI_SUM)

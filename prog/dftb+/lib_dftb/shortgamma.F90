@@ -15,7 +15,7 @@ module shortgamma
   private
 
   public :: expGamma, expGammaDamped, expGammaPrime, expGammaDampedPrime
-  public :: expGammaCutoff
+  public :: expGammaCutoff, expGammaPrime2, extraTermGammaPrime2
 
 
   !> Used to return runtime diagnostics
@@ -216,6 +216,67 @@ contains
   end function expGammaPrime
 
 
+
+  !!* Determines the value of the second derivative of the short range
+  !!* contribution of gamma, leaving out the term that is added when first and
+  !!* second derivative are with respect to the same spatial coordinate.
+  !!* @param rab separation of sites a and b
+  !!* @param Ua Hubbard U for site a
+  !!* @param Ub Hubbard U for site b
+  !!* @note Term for derivative with respect to same spatial coordinate is
+  !!* obtained from extraTermGammaPrime2. Also the 1/rab factors are already
+  !!* included (as opposed to the first derivative expGammaPrime).
+  function expGammaPrime2(rab, Ua, Ub)
+    real(dp), intent(in) :: rab
+    real(dp), intent(in) :: Ua
+    real(dp), intent(in) :: Ub
+    real(dp) :: expGammaPrime2
+
+    real(dp) :: tauA, tauB, tauMean, tmpR1
+
+99085 format ('Failure in 2nd derivative of short-range gamma: ', A, f12.6)
+    if (rab < 0.0_dp) then
+      write(error_string, 99085) 'Negative internuclear distance! ', rab
+      call error(error_string)
+    else if (Ua < MinHubTol) then
+      write(error_string, 99085) 'Hubbard too small! ', Ua
+      call error(error_string)
+    else if (Ub < MinHubTol) then
+      write(error_string, 99085) 'Hubbard too small! ', Ub
+      call error(error_string)
+    end if
+
+    tauA = 3.2_dp*Ua ! tau = 16/5 * U
+    tauB = 3.2_dp*Ub
+    if (rab < tolSameDist) then ! R -> 0
+        !! Note that these are full gammas, not only short range part!
+      if (abs(Ua - Ub) < MinHubDiff) then
+        !! On-site case: Same Hubbard parameters.
+        expGammaPrime2 = - (0.5_dp * (tauA + tauB))**3 / 48.0_dp
+      else
+        !! Different atoms at vanishing distances.
+        expGammaPrime2 = - (tauA**3 * tauB**3) / (6.0_dp * (tauA + tauB)**3)
+      end if
+    else if (abs(Ua - Ub) < MinHubDiff) then
+      !! Limit for the same Hubbard parameter to avoid division by zero
+      tauMean = 0.5_dp * (tauA + tauB)
+      expGammaPrime2 = exp(-tauMean * rab) * &
+          &( 2.0_dp / rab**3 + 2.0_dp * tauMean / rab**2 + tauMean**2 / rab + &
+          &0.35416666666666666667_dp * tauMean**3 + &
+          &0.10416666666666666667_dp * tauMean**4 * rab + &
+          &0.02083333333333333333_dp * tauMean**5 * rab**2)
+    else
+      !! Normal calculation of the gamma derivative
+      expGammaPrime2 = (gammaSubExprnPrime2(rab,tauA,tauB) + &
+          &gammaSubExprnPrime2(rab,tauB,tauA)) / rab**2 - &
+          &(gammaSubExprnPrime(rab,tauA,tauB) + &
+          &gammaSubExprnPrime(rab,tauB,tauA)) / rab**3
+    end if
+
+  end function expGammaPrime2
+
+
+
   !> Determines the value of the short range contribution to gamma with the exponential form with
   !> damping.
   !> See J. Phys. Chem. A, 111, 10865 (2007).
@@ -401,5 +462,68 @@ contains
         & / (rab**2 *(tau1**2-tau2**2)**3)
 
   end function gammaSubExprnPrime
+
+  !!* Determines the second derivative of the value of the short range
+  !!* gamma contribution subexpression when Ua /= Ub and dist > 0
+  !!* @param rab Internuclear distance
+  !!* @param tau1 Hubbard * 3.2 of atom 1
+  !!* @param tau2 Hubbard * 3.2 of atom 2
+  function gammaSubExprnPrime2(rab, tau1, tau2) result(res)
+    real(dp), intent(in) :: rab
+    real(dp), intent(in) :: tau1
+    real(dp), intent(in) :: tau2
+    real(dp) :: res
+
+    real(dp) :: tmpExp, tmpR1, tmpR2
+
+    if (abs(tau1 - tau2) < 3.2_dp*MinHubDiff) then
+      call error('In gammaSubExprnPrime2: Hubbard Parameters are degenerate.')
+    else if (rab < tolSameDist) then
+      call error('In gammaSubExprnPrime2: Atoms have identical coordinates.')
+    end if
+
+    tmpExp = exp(-tau1 * rab)
+    tmpR1 = (0.5_dp * tau2**4 * tau1) / (tau1**2 - tau2**2)**2
+    tmpR2 = (tau2**6 - 3.0_dp * tau2**4 * tau1**2) / &
+        &(tau1**2 - tau2**2)**3
+
+    res = tau1**2 * (tmpR1 - tmpR2 / rab) - &
+        &(2.0_dp * tau1 * tmpR2 / rab**2) - (2.0_dp * tmpR2 / rab**3)
+    res = res * tmpExp
+
+  end function gammaSubExprnPrime2
+
+
+
+  !!* Determines the value of the term that is added to the second derivative of
+  !!* gamma when first and second derivative are with respect to the same
+  !!* spatial coordinate.
+  !!* @param rab Internuclear distance
+  !!* @param Ua Hubbard of atom 1
+  !!* @param Ub Hubbard of atom 2
+  function extraTermGammaPrime2(rab, Ua, Ub) result(res)
+    real(dp), intent(in) :: rab
+    real(dp), intent(in) :: Ua
+    real(dp), intent(in) :: Ub
+    real(dp) :: res
+
+    real(dp) :: tau1, tau2
+
+    if ((Ua - Ub) < MinHubDiff) then
+      !! This limiting case is handled in expGammaPrime2, so return 0.0_dp
+      res = 0.0_dp
+    else if (rab < tolSameDist) then
+      !! This limiting case is handled in expGammaPrime2, so return 0.0_dp
+      res = 0.0_dp
+    else
+      tau1 = 3.2_dp * Ua
+      tau2 = 3.2_dp * Ub
+      !! The sign is already included (coming from gammaSubExprnPrime), so:
+      !! Sum up in other routines with '+'!
+      res = (gammaSubExprnPrime(rab, tau1, tau2) + &
+          &gammaSubExprnPrime(rab, tau2, tau1)) / rab
+    end if
+
+  end function extraTermGammaPrime2
 
 end module shortgamma

@@ -63,6 +63,7 @@ module initprogram
   use dftbplusu
   use dispersions
   use thirdorder_module
+  use Multipole
   use linresp_module
   use stress
   use orbitalequiv
@@ -250,6 +251,8 @@ module initprogram
   !> Raw overlap hamiltonian data
   type(OSlakoCont) :: skOverCont
 
+  type(OSlakoCont) :: fmCont
+
   !> Repulsive interaction raw data
   type(ORepCont) :: pRepCont
 
@@ -270,6 +273,10 @@ module initprogram
 
   !> Charge per atomic shell (shell, atom, spin channel)
   real(dp), allocatable :: chargePerShell(:,:,:)
+
+  !!* Position matrices with dipole origin at first and second center.
+  real(dp), pointer     :: posMtx1(:,:)
+  real(dp), pointer     :: posMtx2(:,:)
 
   !> sparse overlap
   real(dp), allocatable :: over(:)
@@ -466,6 +473,15 @@ module initprogram
   !> Pipek-Mezey localisation calculator
   type(TPipekMezey), allocatable :: pipekMezey
 
+  real(dp), allocatable :: shiftMPole1(:,:) ! shape: (/nSpin, nAtom/)
+  real(dp), allocatable :: shiftMPole2(:,:) ! shape: (/3, nAtom/)
+  real(dp), allocatable :: mixVecInp(:), mixVecDiff(:)
+  real(dp) :: sccErrorD ! Current Dipole SCC Error
+  !! Indicates where different dipole coordinates in the mix vector start.
+  !! -1: y, 0: z, 1: x and 2: end of the vector.
+  integer :: iMix(5)
+  integer :: iMM ! Dipole coordinate quantum number
+
   !> use commands from socket communication to control the run
   logical :: tSocket
 
@@ -518,11 +534,18 @@ module initprogram
   !> shell resolved neutral reference
   real(dp), allocatable :: qShell0(:,:)
 
+  real(dp), allocatable    :: dInput(:,:) !* Dipoles (multipole expansion)
+
   !> input charges (for potentials)
   real(dp), allocatable :: qInput(:, :, :)
 
+  real(dp), allocatable    :: dOutput(:,:) !* Dipoles (multipole expansion)
+
   !> output charges
   real(dp), allocatable :: qOutput(:, :, :)
+
+  real(dp), allocatable    :: dPrime(:,:,:) !* Dipole derivatives
+  real(dp), allocatable    :: qPrime(:,:) !* Charge derivatives
 
   !> input Mulliken block charges (diagonal part == Mulliken charges)
   real(dp), allocatable :: qBlockIn(:, :, :, :)
@@ -603,6 +626,13 @@ module initprogram
 
   !> data structure for 3rd order
   type(ThirdOrder), allocatable :: thirdOrd
+
+  !! Multipole module
+  logical :: tMPole !* Wether multipoles are used
+  logical :: tMulDipole
+  type(OMultipole), save :: mpole !* Multipole instance variable
+  real(dp), allocatable :: fmOnSites(:,:)
+  real(dp) :: dipTol !* Dipole convergence criterium
 
 
   !> Calculate Casida linear response excitations
@@ -704,8 +734,17 @@ module initprogram
   !> Energy weighted density matrix
   real(dp), allocatable :: ERhoPrim(:)
 
+  real(dp), allocatable    :: dRho(:,:) ! Delta rho, density fluctuation
+  real(dp), allocatable    :: rho0(:,:) ! Initial density matrix
+
   !> Non-SCC part of the hamiltonian in sparse storage
   real(dp), allocatable :: h0(:)
+
+  !! Full sparse Hamiltonian, overlap, and position matrix derivatives.
+  real(dp), allocatable    :: sparseHPrime(:,:), sparseSPrime(:,:)
+  real(dp), allocatable    :: pos1Prime(:,:,:), pos2Prime(:,:,:)
+  ! real(dp), allocatable    :: hamTmp(:)
+  real(dp)                 :: mulDipole(3) ! Total Mulliken dipole
 
   !> electronic filling
   real(dp), allocatable :: filling(:,:,:)
@@ -966,6 +1005,9 @@ contains
     logical, allocatable, target :: tDampedShort(:)
     type(ThirdOrderInp) :: thirdInp
 
+    !! Multipoles
+    type(TMPoleInit) :: inpMPole !* Multipole instantiation input
+
     ! PDOS stuff
     integer :: iReg, nAtomRegion, nOrbRegion, iTmp
     integer, allocatable :: iAtomRegion(:)
@@ -999,6 +1041,8 @@ contains
 
     ! Basic variables
     tSccCalc = input%ctrl%tScc
+    tMPole = input%ctrl%tMPole
+    tMulDipole = input%ctrl%tMulDipole
     tDFTBU = input%ctrl%tDFTBU
     tSpin = input%ctrl%tSpin
     if (tSpin) then
@@ -1075,6 +1119,7 @@ contains
     call TParallelKS_init(parallelKS, env, nKPoint, nIndepHam)
 
     sccTol = input%ctrl%sccTol
+    dipTol = input%ctrl%dipTol
     tShowFoldedCoord = input%ctrl%tShowFoldedCoord
     if (tShowFoldedCoord .and. .not. tPeriodic) then
       call error("Folding coordinates back into the central cell is meaningless for molecular&
@@ -1116,6 +1161,7 @@ contains
     ! Slater-Koster tables
     skHamCont = input%slako%skHamCont
     skOverCont = input%slako%skOverCont
+    fmCont = input%slako%fmCont
     pRepCont = input%slako%repCont
 
     allocate(atomEigVal(orb%mShell, nType))
@@ -1303,6 +1349,27 @@ contains
         call ThirdOrder_init(thirdOrd, thirdInp)
         mCutOff = max(mCutOff, thirdOrd%getCutOff())
       end if
+    end if
+
+    !! Initialize the multipole module
+    if (tMPole .or. tMulDipole) then
+      allocate(fmOnSites(6, nType))
+      fmOnSites(:,:) = input%slako%fmOnSites(:,:)
+      allocate(dRho(0, nSpin))
+      allocate(dRho(0, nSpin))
+      !! Multipole shifts per atom
+      allocate(shiftMPole1(nAtom, nSpin))
+      allocate(shiftMPole2(nAtom, -1:1))
+    end if
+    if (tMPole) then
+      inpMPole%orb = orb
+      allocate(inpMPole%hubbU(orb%mShell, nType))
+      inpMPole%hubbU = hubbU
+      inpMPole%tGeoOpt = input%ctrl%tGeoOpt
+      inpMPole%tOrbResolved = .false.
+      inpMPole%tThirdOrder = t3rdFull
+      inpMPole%tPeriodic = .false.
+      call init(mpole, inpMPole)
     end if
 
     ! Initial coordinates
@@ -2011,6 +2078,16 @@ contains
     allocate(qOutput(orb%mOrb, nAtom, nSpin))
     qInput(:,:,:) = 0.0_dp
     qOutput(:,:,:) = 0.0_dp
+
+    !! Dipole array allocation
+    allocate(dInput(nAtom, 3))
+    allocate(dOutput(nAtom, 3))
+    dInput(:,:) = 0.0_dp
+    dOutput(:,:) = 0.0_dp
+    allocate(dPrime(nAtom, 3, 3))
+    allocate(qPrime(nAtom, 3))
+    dPrime(:,:,:) = 0.0_dp
+    qPrime(:,:) = 0.0_dp
 
     if (tDFTBU) then
       allocate(qBlockIn(orb%mOrb, orb%mOrb, nAtom, nSpin))

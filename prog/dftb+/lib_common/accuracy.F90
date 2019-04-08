@@ -128,4 +128,8 @@ module accuracy
   !> Tolerance for electron chemical potential differences being considered equivalent (1E-6 eV)
   real(dp), parameter :: tolEfEquiv = 3.675E-7_dp
 
+  !> Tolerance for the directional cosine z-component being 1.0 for the rotation of matrices ().
+  real(dp), parameter :: tolRotation = epsilon(1.0_dp)
+
+
 end module accuracy

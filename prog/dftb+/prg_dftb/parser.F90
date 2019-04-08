@@ -1239,6 +1239,9 @@ contains
     logical :: tBadIntegratingKPoints
     integer :: nElem
     real(dp) :: rSKCutOff
+    !! Multipole Variables
+    type(listCharLc), allocatable :: fmFiles(:,:)  ! first moment file list
+    !integer :: intTmp  ! temporary integer
 
     ! Read in maximal angular momenta or selected shells
     do ii = 1, maxL+1
@@ -1464,15 +1467,16 @@ contains
           & skInterMeth, repPoly)
     end if
 
-    do iSp1 = 1, geo%nSpecies
-      call destruct(angShells(iSp1))
-      do iSp2 = 1, geo%nSpecies
-        call destruct(skFiles(iSp2, iSp1))
-      end do
-    end do
-    deallocate(angShells)
-    deallocate(skFiles)
-    deallocate(repPoly)
+    !! Has been moved to after MPoles are initialized!
+    !do iSp1 = 1, geo%nSpecies
+    !  call destruct(angShells(iSp1))
+    !  do iSp2 = 1, geo%nSpecies
+    !    call destruct(skFiles(iSp2, iSp1))
+    !  end do
+    !end do
+    !deallocate(angShells)
+    !deallocate(skFiles)
+    !deallocate(repPoly)
 
     ! SCC parameters
     call getChildValue(node, "SCC", ctrl%tSCC, .false.)
@@ -1553,6 +1557,102 @@ contains
       call readHCorrection(node, geo, ctrl)
 
     end if ifSCC
+
+    !! Multipole Setup
+    call getChildValue(node, "FullMullikenDipole", ctrl%tMulDipole, .false.)
+    call getChildValue(node, "Multipole", ctrl%tMPole, .false.)
+    ifMPole: if (ctrl%tMPole .or. ctrl%tMulDipole) then
+      if (.not. ctrl%tSCC) then
+        write (*,*) "Error: Multipole expansion only possible with SCC-DFTB."
+        stop
+      end if
+      call getChildValue(node, "DipoleTolerance", ctrl%dipTol, 1.0E-6_dp)
+      !! First Moment Files
+      allocate(fmFiles(geo%nSpecies, geo%nSpecies))
+      !! Derive all needed first moment combinations
+      do iSp1 = 1, geo%nSpecies
+        do iSp2 = 1, geo%nSpecies
+          call init(fmFiles(iSp2, iSp1))
+        end do
+      end do
+      call getChildValue(node, "FirstMomentFiles", value1, child=child)
+      call getNodeName(value1, buffer)
+      !! First moment filename generation
+      select case(char(buffer))
+      case ("type2filenames")
+        call getChildValue(value1, "Prefix", buffer2, "")
+        prefix = unquote(char(buffer2))
+        call getChildValue(value1, "Suffix", buffer2, ".1m")
+        suffix = unquote(char(buffer2))
+        call getChildValue(value1, "Separator", buffer2, "")
+        separator = unquote(char(buffer2))
+        call getChildValue(value1, "LowerCaseTypeName", tLower, .false.)
+        do iSp1 = 1, geo%nSpecies
+          if (tLower) then
+            elem1 = tolower(geo%speciesNames(iSp1))
+          else
+            elem1 = geo%speciesNames(iSp1)
+          end if
+          do iSp2 = 1, geo%nSpecies
+            if (tLower) then
+              elem2 = tolower(geo%speciesNames(iSp2))
+            else
+              elem2 = geo%speciesNames(iSp2)
+            end if
+            strTmp = trim(prefix) // trim(elem1) // trim(separator) &
+                &// trim(elem2) // trim(suffix)
+            call append(fmFiles(iSp2, iSp1), strTmp)
+            inquire(file=strTmp, exist=tExist)
+            if (.not. tExist) then
+              call detailedError(value1, "SK file with generated name '" &
+                  &// trim(strTmp) // "' does not exist.")
+            end if
+          end do
+        end do
+      case default
+        call setUnprocessed(value1)
+        do iSp1 = 1, geo%nSpecies
+          do iSp2 = 1, geo%nSpecies
+            strTmp = trim(geo%speciesNames(iSp1)) // "-" &
+                &// trim(geo%speciesNames(iSp2))
+            call init(lStr)
+            call getChildValue(child, trim(strTmp), lStr, child=child2)
+            if (len(lStr) /= len(angShells(iSp1)) * len(angShells(iSp2))) then
+              call detailedError(child2, "Incorrect number of Slater-Koster &
+                  &files")
+            end if
+            do ii = 1, len(lStr)
+              call get(lStr, strTmp, ii)
+              inquire(file=strTmp, exist=tExist)
+              if (.not. tExist) then
+                call detailedError(child2, "First moment file '" // &
+                    &trim(strTmp) // "' does not exist'")
+              end if
+              call append(fmFiles(iSp2, iSp1), strTmp)
+            end do
+            !call destroy(lStr)
+          end do
+        end do
+      end select
+      call readFMFiles(fmFiles, geo%nSpecies, slako, slako%orb)
+      do iSp1 = 1, geo%nSpecies
+        do iSp2 = 1, geo%nSpecies
+          !call destroy(fmFiles(iSp2, iSp1))
+        end do
+      end do
+      deallocate(fmFiles)
+    end if ifMPole
+
+    !! Remove fmFiles and angShells since they are not needed anymore
+    do iSp1 = 1, geo%nSpecies
+      call destruct(angShells(iSp1))
+      do iSp2 = 1, geo%nSpecies
+        call destruct(skFiles(iSp2, iSp1))
+      end do
+    end do
+    deallocate(angShells)
+    deallocate(skFiles)
+    deallocate(repPoly)
 
     ! Spin calculation
     call getChildValue(node, "SpinPolarisation", value1, "", child=child, &
@@ -2742,6 +2842,102 @@ contains
   end subroutine readSKFiles
 
 
+  !!* Reads first moment files
+  !!* @param fmFiles List of first moment file names to read
+  !!* @param nSpecie Number of different species in the system
+  !!* @param slako Container for Slater-Koster information
+  !!* @param orb Information about the orbitals in the system
+  !!* contains angular momenta, to pick from the appropriate SK-files.
+  !!* @note Should be replaced with a more sophisticated one, once the new
+  !!*   SK-format has been established
+  !!* @note If there are more first moment files for one species combination,
+  !!*   this whole routine needs to be rewritten
+  !!* @note Used by: prg_dftb/parser.F90 readDFTBHam
+  !!* @note Uses: prg_dftb/parser.F90 getFMTable
+  !!*             prg_dftb/inputdata_.F90 InputData_init
+  !!*             lib_type/linkedlist.F90 type(ListCharLc)
+  !!*             lib_type/old_sk_data.F90 type(TFirstMomData)
+  !!*             lib_type/old_sk_data.F90 readFromFile
+  subroutine readFMFiles(fmFiles, nSpecie, slako, orb)
+    !! Returns the name of a slko file based on species numbers
+    type(ListCharLc), intent(inout) :: fmFiles(:,:)
+    integer, intent(in) :: nSpecie
+    type(slater), intent(inout) :: slako
+    type(TOrbitals), intent(in) :: orb
+
+    integer :: iSp1, iSp2 ! Species indexer variables
+    integer :: nInt
+    !integer :: ind, nInt, iSh1 ! ind, iSh1: Indexer; nInt: Number of Integrals
+    !integer :: angShell(maxL+1), nShell ! nShell: Total number of shells
+    character(lc) :: fileName ! Temporary filename string
+    real(dp) :: dist ! Interatomic distance
+    real(dp), allocatable :: firstMom(:,:), dipoleOrigin(:,:)
+    integer, allocatable :: dipoleCenter(:)
+    logical :: homo
+    !! Contains data from slako file for atom 1 -> 2 and 2 -> 1
+    type(TFirstMomData) :: fmData12, fmData21
+    type(OSlakoEqGrid),  allocatable :: pSlakoEqGrid ! Equally spaced slako grid
+    type(OOrigins),  allocatable  :: pDipoleOrigin
+
+    @:ASSERT(size(fmFiles, dim=1) == size(fmFiles, dim=2))
+    @:ASSERT((size(fmFiles, dim=1) > 0) .and. (size(fmFiles, dim=1) == nSpecie))
+
+    !! Initialize first moment container as a null-pointer
+    allocate(slako%fmCont)
+    allocate(slako%fmOnSites(6, nSpecie))
+    call init(slako%fmCont, nSpecie)
+
+    write(*,"(A)") "Reading first moment files:"
+    !! Read the first moment files
+    lpSp1: do iSp1 = 1, nSpecie
+      lpSp2: do iSp2 = 1, nSpecie
+        homo = (iSp1 == iSp2)
+        call get(fmFiles(iSp2, iSp1), fileName, 1)
+        call readFromFile(fmData21, fileName, homo)
+        write (*,"(2X,A)") trim(fileName)
+        if (homo) then
+          fmData12 = fmData21
+        else
+          call get(fmFiles(iSp1, iSp2), fileName, 1)
+          call readFromFile(fmData12, fileName, homo)
+        end if
+        
+        !! Consistency checking routine
+        call checkFMComp(fmData12, fmData21, iSp1, iSp2)
+        !! Create full first moment table for all interactions of iSp1-iSp2
+        nInt = getNFMIntegrals(iSp1, iSp2, orb)
+        allocate(firstMom(size(fmData12%firstMom, dim=1), nInt))
+        allocate(dipoleOrigin(3, nInt))
+        allocate(dipoleCenter(nInt))
+        dipoleCenter(:) = 0
+        call getFMTable(firstMom, dipoleOrigin, dipoleCenter, fmData12, &
+            &fmData21, maxval(orb%angShell(:,iSp1)), &
+            &maxval(orb%angShell(:,iSp2)))
+
+        !! Add first moment to the containers for iSp1-iSp2
+        allocate(pSlakoEqGrid)
+        allocate(pDipoleOrigin)
+        dist = fmData12%dist
+        !! Using skEqGridOld hardcoded for now.
+        !! TODO: Make both interpolations possible!
+        call init(pSlakoEqGrid, dist, firstMom, skEqGridOld)
+        call init(pDipoleOrigin, dipoleOrigin, dipoleCenter)
+        call addTable(slako%fmCont, pSlakoEqGrid, iSp2, iSp1)
+        call addVecTable(slako%fmCont, pDipoleOrigin, iSp2, iSp1)
+        deallocate(firstMom)
+        deallocate(dipoleOrigin)
+        deallocate(dipoleCenter)
+        if (homo) then ! Homoatomic case: Add on-site integrals
+          slako%fmOnSites(:,iSp1) = fmData12%onSites(:)
+        end if
+      end do lpSp2
+    end do lpSp1
+
+    write(*,"(A)") "Done."
+
+  end subroutine readFMFiles
+
+
   !> Checks if the provided set of SK-tables for a the interactions A-B and B-A are consistent.
   subroutine checkSKCompElec(skData12, skData21, sp1, sp2)
 
@@ -2884,6 +3080,41 @@ contains
   end subroutine checkSKCompRepPoly
 
 
+  !!* Checks if the provided set of first moment tables for the interactions
+  !!* 1->2 and 2->1 are consistent.
+  !!* @param fmData12 First moment set for the interaction 1->2
+  !!* @param fmData21 First moment set for the interaction 2->1
+  !!* @param sp1 Species number (for error messages)
+  !!* @param sp2 Species number (for error messages)
+  subroutine checkFMComp(fmData12, fmData21, sp1, sp2)
+    type(TFirstMomData), intent(in) :: fmData12, fmData21
+    integer, intent(in) :: sp1, sp2
+
+    integer :: nGrid
+    real(dp) :: dist
+    character(lc) :: errorStr
+
+    nGrid = fmData12%nGrid
+    dist = fmData12%dist
+
+    !! Checking for consistency regarding grid length and seperation.
+    if (fmData12%dist /= dist .or. fmData21%dist /= dist) then
+      write (errorStr, "(A,I2,A,I2)") "Incompatible first moment grid &
+          &separations for species ", sp1, ", ", sp2
+      call error(errorStr)
+    end if
+    if (fmData12%nGrid /= nGrid .or. &
+        &fmData21%nGrid /= nGrid) then
+      write (errorStr, "(A,I2,A,I2)") "Incompatible first moment grid &
+          &sizes for species ", sp1, ", ", sp2
+      call error(errorStr)
+    end if
+
+  end subroutine checkFMComp
+
+
+
+
   !> Returns the nr. of Slater-Koster integrals necessary to describe the interactions between two
   !> species
   pure function getNSKIntegrals(sp1, sp2, orb) result(nInteract)
@@ -2910,6 +3141,40 @@ contains
     end do
 
   end function getNSKIntegrals
+
+
+  !!* Returns the nr. of first moment integrals necessary to describe the
+  !!* interactions between two species.
+  !!* @param sp1 Index of the first species.
+  !!* @param sp2 Index of the second species.
+  !!* @param angShell Angular momentum of a shell (ideally use orb%angShell)
+  !!* @return nInt Nr. of Slater-Koster interactions.
+  pure function getNFMIntegrals(sp1, sp2, orb) result(nInt)
+    integer, intent(in) :: sp1, sp2
+    type(TOrbitals), intent(in) :: orb
+
+    integer :: nInt ! Number of integrals
+    integer :: l1, l2, m1, m2, mDipole ! Indexer for loops
+
+    nInt = 0
+    !! loop over all angular and magnetic momenta; if the selection rules are
+    !! met for a given l1, l2, m1, m2 combination, we found a needed integral.
+    do l1 = 0, maxval(orb%angShell(:,sp1))
+      do l2 = 0, maxval(orb%angShell(:,sp2))
+        do m1 = 0, l1
+          do m2 = 0, l2
+            do mDipole = 0, 1
+              if (mDipole == m1 + m2 .or. mDipole == abs(m1 - m2)) then
+                nInt = nInt + 1
+              end if
+            end do
+          end do
+        end do
+      end do
+    end do
+
+  end function getNFMIntegrals
+
 
 
   !> Creates from the columns of the Slater-Koster files for A-B and B-A a full table for A-B,
@@ -2985,6 +3250,120 @@ contains
     end do
 
   end subroutine getFullTable
+
+
+  !!* Creates from the columns of the first moment files for A-B and B-A
+  !!* a full table for A-B, containing all integrals.
+  !!* @param firstMom Output: Contains the full first moment table
+  !!* @param dipoleOrigin Output: For each firstMom index a dipole vector
+  !!* @param fmData21 Contains all SK files describing interactions for B-A
+  !!* @param fmData12 Contains all SK files describing interactions for A-B
+  !!* @param l2Max Maximum angular momentum of atom B (iSp2)
+  !!* @param l1Max Maximum angular momentum of atom A (iSp1)
+  !!* @note: Used by: prg_dftb/parser.F90 readFMFiles
+  !!* @note: Uses: lib_type/linkedlist.F90 type(listIntR1)
+  !!* @note: Possibility of selected shells is ignored, one max. angular
+  !!*        momentum is assumed!
+  subroutine getFMTable(firstMom, dipoleOrigin, dipoleCenter, &
+      &fmData21, fmData12, l2Max, l1Max)
+    real(dp), intent(out) :: firstMom(:,:)
+    real(dp), intent(out) :: dipoleOrigin(:,:)
+    integer, intent(out) :: dipoleCenter(:)
+    type(TFirstMomData), intent(in) :: fmData12, fmData21
+    integer, intent(in) :: l1Max, l2Max
+
+    integer :: ind, l1, l2, mDipole, m1, m2 ! Indexers
+    integer :: lMin, lMax, mMin, mMax
+    real(dp), pointer :: pFirstMom(:,:)
+    integer :: center
+    real(dp) :: origVec(3)
+
+    !! Maps (m2, m1, l2, l1) onto an element in the table.
+    !! Note: At the moment restricted to lMax = 2 (d-shells)
+    integer :: fmMap(0:maxL, 0:maxL, 0:maxL, 0:maxL)
+
+    !! Build fmMap integral index matrix
+    ind = 1
+    fmMap(:,:,:,:) = 0
+    do l1 = 0, maxL - 1 ! Needs to be changed when 1m files are extended to f
+      do l2 = l1, maxL - 1 ! Needs to be changed when 1m files are extended to f
+        do m1 = 0, l1
+          do m2 = m1, l2
+            do mDipole = 0, 1
+              if (mDipole == m1 + m2 .or. mDipole == abs(m1 - m2)) then
+                fmMap(m2, m1, l2, l1) = ind
+                ind = ind + 1
+              end if
+            end do
+          end do
+        end do
+      end do
+    end do
+
+    ind = 1
+    do l1 = 0, l1Max ! <- actual lmax would be better
+      do l2 = 0, l2Max ! <- actual lmax would be better
+        do m1 = 0, l1
+          do m2 = 0, l2
+            do mDipole = 0, 1
+              if (mDipole == m1 + m2 .or. mDipole == abs(m1 - m2)) then
+                if (l1 < l2) then
+                  pFirstMom => fmData21%firstMom
+                  center = fmData21%center
+                  lMin = l1
+                  lMax = l2
+                  mMin = m1
+                  mMax = m2
+                else if(l1 == l2) then
+                  if (m1 <= m2) then
+                    pFirstMom => fmData21%firstMom
+                    center = fmData21%center
+                    lMin = l1
+                    lMax = l2
+                    mMin = m1
+                    mMax = m2
+                  else
+                    pFirstMom => fmData12%firstMom
+                    if (fmData12%center == 2) then
+                      center = 1
+                    else
+                      center = 2
+                    end if
+                    lMin = l2
+                    lMax = l1
+                    mMin = m2
+                    mMax = m1
+                  end if
+                else if (l1 > l2) then
+                  pFirstMom => fmData12%firstMom
+                    if (fmData12%center == 2) then
+                      center = 1
+                    else
+                      center = 2
+                    end if
+                  lMin = l2
+                  lMax = l1
+                  mMin = m2
+                  mMax = m1
+                end if
+                !! Safety check, if array sizes are appropriate
+                @:ASSERT(all(shape(firstMom) >= &
+                    &(/ size(pFirstMom, dim=1), ind /)))
+                @:ASSERT(size(fmData12%origVec) &
+                    &== size(fmData21%origVec))
+                firstMom(:,ind) = pFirstMom(:,fmMap(mMax, mMin, lMax, lMin))
+                dipoleCenter(ind) = center
+                dipoleOrigin(:,ind) = 0.0_dp
+                ind = ind + 1
+              end if
+            end do
+          end do
+        end do
+      end do
+    end do
+
+  end subroutine getFMTable
+
 
 
   !> Reads the option block

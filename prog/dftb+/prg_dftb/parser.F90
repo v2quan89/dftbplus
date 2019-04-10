@@ -2532,6 +2532,8 @@ contains
     case ("dampingver2")
       ! Switch the damping correction version 2 on
       ctrl%tDampHVer2 = .true.
+      ctrl%dampExp = 1.0_dp
+      call getChildValue(value1, "Exponent", ctrl%dampExpVer2, 2.0_dp)
       allocate(ctrl%dampingCoeff(geo%nSpecies))
       do iSp = 1, geo%nSpecies
         call getChildValue(value1, geo%speciesNames(iSp), ctrl%dampingCoeff(iSp), 0.0_dp)

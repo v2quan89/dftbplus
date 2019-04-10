@@ -246,7 +246,7 @@ contains
 
   !> Determines the value of the short range contribution to gamma with the exponential form with
   !> damping version 2.
-  function expGammaDampedVer2(rab, Ua, Ub, coeffa1, coeffa2)
+  function expGammaDampedVer2(rab, Ua, Ub, coeffa1, coeffa2, dampExpVer2)
 
     !> separation of sites a and b
     real(dp), intent(in) :: rab
@@ -260,13 +260,16 @@ contains
     !> Damping coefficient
     real(dp), intent(in) :: coeffa1, coeffa2 
 
+    !> Damping exponent
+    real(dp), intent(in) :: dampExpVer2
+
     !> returned contribution
     real(dp) :: expGammaDampedVer2
 
     real(dp) :: rTmp
 
     rTmp = -1.0_dp * 0.5_dp * (coeffa1 + coeffa2)
-    expGammaDampedVer2 = expGamma(rab, Ua, Ub) * exp(rTmp * rab**2)
+    expGammaDampedVer2 = expGamma(rab, Ua, Ub) * exp(rTmp * rab**dampExpVer2)
 
   end function expGammaDampedVer2
 
@@ -300,7 +303,7 @@ contains
 
   !> Determines the value of the derivative of the short range contribution to gamma with the
   !> exponential form with damping version 2
-  function expGammaDampedVer2Prime(rab, Ua, Ub, coeffa1, coeffa2)
+  function expGammaDampedVer2Prime(rab, Ua, Ub, coeffa1, coeffa2, dampExpVer2)
 
     !> separation of sites a and b
     real(dp), intent(in) :: rab
@@ -314,14 +317,18 @@ contains
     !> Damping coefficient  
     real(dp), intent(in) :: coeffa1, coeffa2
 
+    !> Damping exponent
+    real(dp), intent(in) :: dampExpVer2
+
     !> returned contribution
     real(dp) :: expGammaDampedVer2Prime
 
     real(dp) :: rTmp
 
     rTmp = -1.0_dp * 0.5_dp *(coeffa1 + coeffa2)
-    expGammaDampedVer2Prime = expGammaPrime(rab, Ua, Ub) * exp(rTmp * rab**2) &
-        &+ 2.0_dp * expGamma(rab, Ua, Ub) * exp(rTmp * rab**2) * rab * rTmp
+    expGammaDampedVer2Prime = expGammaPrime(rab, Ua, Ub) * exp(rTmp * rab**dampExpVer2) &
+        &+ expGamma(rab, Ua, Ub) * exp(rTmp * rab**dampExpVer2) * rTmp * dampExpVer2&
+        &* rab**(dampExpVer2-1.0_dp)
 
   end function expGammaDampedVer2Prime
 

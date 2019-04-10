@@ -1277,11 +1277,14 @@ contains
         tDampedShort(:) = .false.
       end if
       sccInp%tDampedShort = tDampedShort
-      sccInp%dampExp = input%ctrl%dampExp
       ! damping version 2 
       if (input%ctrl%tDampHVer2) then
+        sccInp%dampExp = 1.0_dp 
+        sccInp%dampExpVer2 = input%ctrl%dampExpVer2
         allocate(sccInp%dampingCoeff(nType))
         sccInp%dampingCoeff(:) = input%ctrl%dampingCoeff(:)
+      else
+        sccInp%dampExp = input%ctrl%dampExp
       end if
 
       ! H5 correction
@@ -1348,9 +1351,18 @@ contains
         thirdInp%orb => orb
         thirdInp%hubbUs = hubbU
         thirdInp%hubbUDerivs = input%ctrl%hubDerivs
-        allocate(thirdInp%damped(nType))
-        thirdInp%damped(:) = tDampedShort
-        thirdInp%dampExp = input%ctrl%dampExp
+        if (input%ctrl%tDampHVer2) then
+          allocate(thirdInp%damped(nType))
+          thirdInp%damped(:) = tDampedShort
+          thirdInp%dampExp = 1.0_dp 
+          thirdInp%dampExpVer2 = input%ctrl%dampExpVer2
+          allocate(thirdInp%dampingCoeff(nType))
+          thirdInp%dampingCoeff(:) = input%ctrl%dampingCoeff(:)
+        else 
+          allocate(thirdInp%damped(nType))
+          thirdInp%damped(:) = tDampedShort
+          thirdInp%dampExp = input%ctrl%dampExp
+        end if
         thirdInp%shellResolved = input%ctrl%tOrbResolved
         allocate(thirdOrd)
         call ThirdOrder_init(thirdOrd, thirdInp)

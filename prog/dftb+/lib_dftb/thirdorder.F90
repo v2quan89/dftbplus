@@ -37,7 +37,10 @@ module thirdorder_module
     logical, allocatable :: damped(:)
 
     !> Exponention of the damping
-    real(dp) :: dampExp
+    real(dp) :: dampExp, dampExpVer2
+
+    !> 
+    real(dp), allocatable :: dampingCoeff(:)
 
     !> Whether third order should be considered shell resolved. If not, only the first shell of each
     !> atom in hubbUs and hubbUDerivs is used.
@@ -60,7 +63,8 @@ module thirdorder_module
     integer, allocatable :: nNeigh(:,:), nNeighMax(:)
     real(dp), allocatable :: gamma3ab(:,:,:,:), gamma3ba(:,:,:,:)
     logical, allocatable :: damped(:)
-    real(dp) :: dampExp
+    real(dp) :: dampExp, dampExpVer2
+    real(dp), allocatable :: dampingCoeff(:)
     real(dp) :: maxCutoff
   contains
     procedure :: getCutoff
@@ -119,6 +123,12 @@ contains
     allocate(this%damped(this%nSpecies))
     this%damped = inp%damped
     this%dampExp = inp%dampExp
+    this%dampExpVer2 = 2.0_dp
+    if (allocated(inp%dampingCoeff)) then
+      this%dampExpVer2 = inp%dampExpVer2
+      allocate(this%dampingCoeff(this%nSpecies))
+      this%dampingCoeff(:) = inp%dampingCoeff(:)
+    end if
 
   end subroutine ThirdOrder_init
 
@@ -180,10 +190,19 @@ contains
           damping = this%damped(iSp1) .or. this%damped(iSp2)
           do iSh1 = 1, this%nShells(iSp1)
             do iSh2 = 1, this%nShells(iSp2)
-              this%gamma3ab(iSh2, iSh1, iNeigh, iAt1) = gamma3(this%UU(iSh1, iSp1),&
-                  & this%UU(iSh2, iSp2), this%dUdQ(iSh1, iSp1), rr, damping, this%dampExp)
-              this%gamma3ba(iSh2, iSh1, iNeigh, iAt1) = gamma3(this%UU(iSh2, iSp2),&
-                  & this%UU(iSh1, iSp1), this%dUdQ(iSh2, iSp2), rr, damping, this%dampExp)
+              if (allocated(this%dampingCoeff)) then
+                this%gamma3ab(iSh2, iSh1, iNeigh, iAt1) = gamma3Ver2(this%UU(iSh1, iSp1),&
+                    & this%UU(iSh2, iSp2), this%dUdQ(iSh1, iSp1), rr, damping, this%dampExpVer2,&
+                    & this%dampingCoeff(iSp1), this%dampingCoeff(iSp2))
+                this%gamma3ba(iSh2, iSh1, iNeigh, iAt1) = gamma3Ver2(this%UU(iSh2, iSp2),&
+                    & this%UU(iSh1, iSp1), this%dUdQ(iSh2, iSp2), rr, damping, this%dampExpVer2,&
+                    & this%dampingCoeff(iSp1), this%dampingCoeff(iSp2))
+              else
+                this%gamma3ab(iSh2, iSh1, iNeigh, iAt1) = gamma3(this%UU(iSh1, iSp1),&
+                    & this%UU(iSh2, iSp2), this%dUdQ(iSh1, iSp1), rr, damping, this%dampExp)
+                this%gamma3ba(iSh2, iSh1, iNeigh, iAt1) = gamma3(this%UU(iSh2, iSp2),&
+                    & this%UU(iSh1, iSp1), this%dUdQ(iSh2, iSp2), rr, damping, this%dampExp)
+              end if
             end do
           end do
         end if
@@ -400,13 +419,25 @@ contains
         tmp = 0.0_dp
         do iSh1 = 1, this%nShells(iSp1)
           do iSh2 = 1, this%nShells(iSp2)
-            tmp = tmp + this%chargesPerShell(iSh1, iAt1) * this%chargesPerShell(iSh2, iAt2f)&
-                & * (this%chargesPerAtom(iAt1)&
-                & * gamma3pR(this%UU(iSh1, iSp1), this%UU(iSh2, iSp2),&
-                & this%dUdQ(iSh1, iSp1), rab, damping, this%dampExp)&
-                & + this%chargesPerAtom(iAt2f)&
-                & * gamma3pR(this%UU(iSh2, iSp2), this%UU(iSh1, iSp1),&
-                & this%dUdQ(iSh2, iSp2), rab, damping, this%dampExp))
+            if (allocated(this%dampingCoeff)) then
+              tmp = tmp + this%chargesPerShell(iSh1, iAt1) * this%chargesPerShell(iSh2, iAt2f)&
+                  & * (this%chargesPerAtom(iAt1)&
+                  & * gamma3pRVer2(this%UU(iSh1, iSp1), this%UU(iSh2, iSp2),&
+                  & this%dUdQ(iSh1, iSp1), rab, damping, this%dampExpVer2,&
+                  & this%dampingCoeff(iSp1), this%dampingCoeff(iSp2))&
+                  & + this%chargesPerAtom(iAt2f)&
+                  & * gamma3pRVer2(this%UU(iSh2, iSp2), this%UU(iSh1, iSp1),&
+                  & this%dUdQ(iSh2, iSp2), rab, damping, this%dampExpVer2,&
+                  & this%dampingCoeff(iSp1), this%dampingCoeff(iSp2)))
+            else
+              tmp = tmp + this%chargesPerShell(iSh1, iAt1) * this%chargesPerShell(iSh2, iAt2f)&
+                  & * (this%chargesPerAtom(iAt1)&
+                  & * gamma3pR(this%UU(iSh1, iSp1), this%UU(iSh2, iSp2),&
+                  & this%dUdQ(iSh1, iSp1), rab, damping, this%dampExp)&
+                  & + this%chargesPerAtom(iAt2f)&
+                  & * gamma3pR(this%UU(iSh2, iSp2), this%UU(iSh1, iSp1),&
+                  & this%dUdQ(iSh2, iSp2), rab, damping, this%dampExp))
+            end if
           end do
         end do
         tmp3(:) = tmp / (3.0_dp * rab) * (coords(:, iAt1) - coords(:, iAt2))
@@ -486,12 +517,23 @@ contains
         tmp = 0.0_dp
         do iSh1 = 1, this%nShells(iSp1)
           do iSh2 = 1, this%nShells(iSp2)
-            gammaDeriv1 =&
-                & gamma3pR(this%UU(iSh1, iSp1), this%UU(iSh2, iSp2),&
-                & this%dUdQ(iSh1, iSp1), rab, damping, this%dampExp)
-            gammaDeriv2 =&
-                & gamma3pR(this%UU(iSh2, iSp2), this%UU(iSh1, iSp1),&
-                & this%dUdQ(iSh2, iSp2), rab, damping, this%dampExp)
+            if (allocated(this%dampingCoeff)) then
+              gammaDeriv1 =&
+                  & gamma3pRVer2(this%UU(iSh1, iSp1), this%UU(iSh2, iSp2),&
+                  & this%dUdQ(iSh1, iSp1), rab, damping, this%dampExpVer2,&
+                  & this%dampingCoeff(iSp1), this%dampingCoeff(iSp2))
+              gammaDeriv2 =&
+                  & gamma3pRVer2(this%UU(iSh2, iSp2), this%UU(iSh1, iSp1),&
+                  & this%dUdQ(iSh2, iSp2), rab, damping, this%dampExpVer2,&
+                  & this%dampingCoeff(iSp1), this%dampingCoeff(iSp2))
+            else
+              gammaDeriv1 =&
+                  & gamma3pR(this%UU(iSh1, iSp1), this%UU(iSh2, iSp2),&
+                  & this%dUdQ(iSh1, iSp1), rab, damping, this%dampExp)
+              gammaDeriv2 =&
+                  & gamma3pR(this%UU(iSh2, iSp2), this%UU(iSh1, iSp1),&
+                  & this%dUdQ(iSh2, iSp2), rab, damping, this%dampExp)
+            end if
             tmp = tmp + gammaDeriv1&
                 & * (this%chargesPerAtom(iAt1) * this%chargesPerShell(iSh2, iAt2f)&
                 & * qOutShell(iSh1, iAt1)&
@@ -566,13 +608,25 @@ contains
         tmp = 0.0_dp
         do iSh1 = 1, this%nShells(iSp1)
           do iSh2 = 1, this%nShells(iSp2)
-            tmp = tmp + this%chargesPerShell(iSh1, iAt1) * this%chargesPerShell(iSh2, iAt2f)&
-                & * (this%chargesPerAtom(iAt1)&
-                & * gamma3pR(this%UU(iSh1, iSp1), this%UU(iSh2, iSp2),&
-                & this%dUdQ(iSh1, iSp1), rab, damping, this%dampExp)&
-                & + this%chargesPerAtom(iAt2f)&
-                & * gamma3pR(this%UU(iSh2, iSp2), this%UU(iSh1, iSp1),&
-                & this%dUdQ(iSh2, iSp2), rab, damping, this%dampExp))
+            if (allocated(this%dampingCoeff)) then
+              tmp = tmp + this%chargesPerShell(iSh1, iAt1) * this%chargesPerShell(iSh2, iAt2f)&
+                  & * (this%chargesPerAtom(iAt1)&
+                  & * gamma3pRVer2(this%UU(iSh1, iSp1), this%UU(iSh2, iSp2),&
+                  & this%dUdQ(iSh1, iSp1), rab, damping, this%dampExpVer2,&
+                  & this%dampingCoeff(iSp1), this%dampingCoeff(iSp2))&
+                  & + this%chargesPerAtom(iAt2f)&
+                  & * gamma3pRVer2(this%UU(iSh2, iSp2), this%UU(iSh1, iSp1),&
+                  & this%dUdQ(iSh2, iSp2), rab, damping, this%dampExpVer2,&
+                  & this%dampingCoeff(iSp1), this%dampingCoeff(iSp2)))
+            else
+              tmp = tmp + this%chargesPerShell(iSh1, iAt1) * this%chargesPerShell(iSh2, iAt2f)&
+                  & * (this%chargesPerAtom(iAt1)&
+                  & * gamma3pR(this%UU(iSh1, iSp1), this%UU(iSh2, iSp2),&
+                  & this%dUdQ(iSh1, iSp1), rab, damping, this%dampExp)&
+                  & + this%chargesPerAtom(iAt2f)&
+                  & * gamma3pR(this%UU(iSh2, iSp2), this%UU(iSh1, iSp1),&
+                  & this%dUdQ(iSh2, iSp2), rab, damping, this%dampExp))
+            end if
           end do
         end do
         tmp3(:) = tmp / (3.0_dp * rab) * (coords(:, iAt1) - coords(:, iAt2))
@@ -637,6 +691,20 @@ contains
 
   end function gamma3
 
+  function gamma3Ver2(Ua, Ub, dUa, rab, damping, xi, coeffa, coeffb) result(res)
+    real(dp), intent(in) :: Ua
+    real(dp), intent(in) :: Ub
+    real(dp), intent(in) :: dUa
+    real(dp), intent(in) :: rab
+    logical, intent(in) :: damping
+    real(dp), intent(in) :: xi
+    real(dp), intent(in) :: coeffa 
+    real(dp), intent(in) :: coeffb 
+    real(dp) :: res
+
+    res = gamma2pUVer2(Ua, Ub, rab, damping, xi, coeffa, coeffb) * dUa
+
+  end function gamma3Ver2
 
   !> dGamma_AB/dr
   function gamma3pR(Ua, Ub, dUa, rab, damping, xi) result(res)
@@ -649,6 +717,17 @@ contains
 
   end function gamma3pR
 
+  function gamma3pRVer2(Ua, Ub, dUa, rab, damping, xi, coeffa, coeffb) result(res)
+    real(dp), intent(in) :: Ua, Ub, dUa, rab
+    logical, intent(in) :: damping
+    real(dp), intent(in) :: xi
+    real(dp), intent(in) :: coeffa 
+    real(dp), intent(in) :: coeffb 
+    real(dp) :: res
+
+    res = gamma2pUpRVer2(Ua, Ub, rab, damping, xi, coeffa, coeffb) * dUa
+
+  end function gamma3pRVer2
 
   !> dgamma_AB/dUa
   !> Sign convention: routine delivers dgamma_AB/dUa with the right sign.
@@ -687,6 +766,43 @@ contains
 
   end function gamma2pU
 
+  !> dgamma_AB/dUa
+  !> Sign convention: routine delivers dgamma_AB/dUa with the right sign.
+  !> Energy contributions must be therefore summed with *positive* sign.
+  function gamma2pUVer2(Ua, Ub, rab, damping, xi, coeffa, coeffb) result(res)
+    real(dp), intent(in) :: Ua, Ub, rab
+    logical, intent(in) :: damping
+    real(dp), intent(in) :: xi
+    real(dp), intent(in) :: coeffa 
+    real(dp), intent(in) :: coeffb 
+    real(dp) :: res
+
+    real(dp) :: tauA, tauB, tau, uu
+
+    tauA = 3.2_dp * Ua      ! 16/5 * Ua
+    tauB = 3.2_dp * Ub
+
+    if (rab < tolSameDist) then
+      if (abs(Ua - Ub) < minHubDiff) then
+        ! Limiting case for dG/dU with Ua=Ub and Rab = 0
+        res = 0.5_dp
+      else
+        res = dGdUr0(tauA, tauB)
+      end if
+    else if (abs(Ua - Ub) < minHubDiff) then
+      tau = 0.5_dp * (tauA + tauB)
+      res = -3.2_dp * shortpT_2(tau, rab)
+      if (damping) then
+        res = res * hhVer2(coeffa, coeffb, rab, xi) !- short_2(tau, rab) * hpU(uu, uu, rab, xi)
+      end if
+    else
+      res = -3.2_dp * shortpT_1(tauA, tauB, rab)
+      if (damping) then
+        res = res * hhVer2(coeffa, coeffb, rab, xi) !- short_1(tauA, tauB, rab) * hpU(Ua, Ub, rab, xi)
+      end if
+    end if
+
+  end function gamma2pUVer2
 
   !> d^2gamma_AB/dUa*dr
   !> Sign convention: routine delivers d^2gamma_AB/dUa*dr with the right sign.
@@ -725,6 +841,41 @@ contains
     end if
 
   end function gamma2pUpR
+
+  !> d^2gamma_AB/dUa*dr
+  !> Sign convention: routine delivers d^2gamma_AB/dUa*dr with the right sign.
+  !> Gradient contributions must be therefore summed with *positive* sign.
+  function gamma2pUpRVer2(Ua, Ub, rab, damping, xi, coeffa, coeffb) result(res)
+    real(dp), intent(in) :: Ua, Ub, rab
+    logical, intent(in) :: damping
+    real(dp), intent(in) :: xi
+    real(dp), intent(in) :: coeffa 
+    real(dp), intent(in) :: coeffb 
+    real(dp) :: res
+
+    real(dp) :: tauA, tauB, tau, uu
+
+    tauA = 3.2_dp * Ua
+    tauB = 3.2_dp * Ub
+
+    if (rab < tolSameDist) then
+      res = 0.0_dp
+    else if (abs(Ua - Ub) < minHubDiff) then
+      tau = 0.5_dp * (tauA + tauB)
+      res = -3.2_dp * shortpTpR_2(tau, rab)
+      if (damping) then
+        res = res * hhVer2(coeffa, coeffb, rab, xi)&
+            & - 3.2_dp * shortpT_2(tau, rab) * hpRVer2(coeffa, coeffb, rab, xi)
+      end if
+    else
+      res = -3.2_dp *shortpTpR_1(tauA, tauB, rab)
+      if (damping) then
+        res = res * hhVer2(coeffa, coeffb, rab, xi)&
+            & - 3.2_dp * shortpT_1(tauA, tauB, rab) * hpRVer2(coeffa, coeffb, rab, xi)
+      end if
+    end if
+
+  end function gamma2pUpRVer2
 
 
   !> \frac{d\gamma}{dU_{l_a}} for r = 0
@@ -943,6 +1094,15 @@ contains
 
   end function hh
 
+  !> Damping: h(Ua,Ub)
+  function hhVer2(coeffa, coeffb, rab, xi) result(res)
+    real(dp), intent(in) ::  coeffa, coeffb, rab, xi
+    real(dp) :: res
+
+    res = exp(-(0.5_dp * (coeffa + coeffb)) * rab**xi)
+
+  end function hhVer2
+
 
   !> dh(Ua,Ub)/dUa
   function hpU(Ua, Ub, rab, xi) result(res)
@@ -962,6 +1122,15 @@ contains
     res = -2.0_dp * rab * (0.5_dp * (Ua + Ub))**xi * hh(Ua, Ub, rab, xi)
 
   end function hpR
+
+  !> dh(Ua,Ub)/dr
+  function hpRVer2(coeffa, coeffb, rab, xi) result(res)
+    real(dp), intent(in) :: coeffa, coeffb, rab, xi
+    real(dp) :: res
+
+    res = -xi * rab**(xi-1.0_dp) * (0.5_dp * (coeffa + coeffb)) * hhVer2(coeffa, coeffb, rab, xi)
+
+  end function hpRVer2
 
 
   !> dh(Ua,Ub)/dUa*dr

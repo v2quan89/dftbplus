@@ -367,6 +367,7 @@ module inputdata_module
 
     !> H short range damping version 2
     logical :: tDampHVer2 = .false.
+    real(dp) :: dampExpVer2 = 0.0_dp
     real(dp), allocatable :: dampingCoeff(:)
 
 

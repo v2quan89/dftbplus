@@ -50,6 +50,9 @@ module scc
     !> exponent if damping used
     real(dp) :: dampExp = 0.0_dp
 
+    !> exponent if damping used
+    real(dp) :: dampExpVer2 = 0.0_dp
+
     !> Damping Coefficient if damping version 2 used
     real(dp), allocatable :: dampingCoeff(:)
 
@@ -185,6 +188,9 @@ module scc
 
     !> Damping exponent
     real(dp) :: dampExp
+
+    !> Damping exponent
+    real(dp) :: dampExpVer2
 
     !> Damping Coefficient
     real(dp), allocatable :: dampingCoeff(:)
@@ -442,6 +448,7 @@ contains
 
     ! Initialise short range damping verion 2
     if (allocated(inp%dampingCoeff)) then
+      this%dampExpVer2 = inp%dampExpVer2
       allocate(this%dampingCoeff(this%nSpecies))
       this%dampingCoeff(:) = inp%dampingCoeff(:)
     end if
@@ -1345,7 +1352,7 @@ contains
                   tmpGammaPrime = expGammaDampedPrime(rab, u2, u1, this%dampExp)
                 else
                   tmpGammaPrime = expGammaDampedVer2Prime(rab, u2, u1, this%dampingCoeff(iSp2),&
-                    & this%dampingCoeff(iSp1))
+                    & this%dampingCoeff(iSp1), this%dampExpVer2)
                 end if
               else
                 tmpGammaPrime = expGammaPrime(rab, u2, u1)
@@ -1408,7 +1415,7 @@ contains
                   this%shortGamma(iU2 ,iU1, iNeigh, iAt1) = expGammaDamped(rab, u2, u1, this%dampExp)
                 else 
                   this%shortGamma(iU2 ,iU1, iNeigh, iAt1) = expGammaDampedVer2(rab, u2, u1,&
-                      & this%dampingCoeff(iSp2), this%dampingCoeff(iSp1))
+                      & this%dampingCoeff(iSp2), this%dampingCoeff(iSp1), this%dampExpVer2)
                 end if
               else
                 this%shortGamma(iU2 ,iU1, iNeigh, iAt1) = expGamma(rab, u2, u1)
@@ -1470,7 +1477,7 @@ contains
                   tmpGammaPrime = expGammaDampedPrime(rab, u2, u1, this%dampExp)
                 else
                   tmpGammaPrime = expGammaDampedVer2Prime(rab, u2, u1, this%dampingCoeff(iSp2),&
-                      & this%dampingCoeff(iSp1))
+                      & this%dampingCoeff(iSp1), this%dampExpVer2)
                 end if
               else
                 tmpGammaPrime = expGammaPrime(rab, u2, u1)
@@ -1546,7 +1553,7 @@ contains
                   tmpGammaPrime = expGammaDampedPrime(rab, u2, u1, this%dampExp)
                 else 
                   tmpGammaPrime = expGammaDampedVer2Prime(rab, u2, u1, this%dampingCoeff(iSp2),&
-                      & this%dampingCoeff(iSp1))
+                      & this%dampingCoeff(iSp1), this%dampExpVer2)
                 end if
               else
                 tmpGammaPrime = expGammaPrime(rab, u2, u1)

@@ -1,6 +1,7 @@
 *~
 *.pyc
 _gitmsg.saved.txt
+tools/dptools/build/
 external/slakos/origin
 external/slakos/status
 external/dftd3/origin

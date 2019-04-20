@@ -88,27 +88,12 @@ module rangeseparated
     procedure :: addLRHamiltonian
     procedure :: addLREnergy
     procedure :: addLRGradients
-    procedure :: getRSAlg
     procedure :: evaluateLREnergyDirect
 
   end type RangeSepFunc
 
 
 contains
-
-
-  !> Return the choice of range separation screening algorithm
-  pure function getRSALg(self) result(res)
-
-    !> class instance
-    class(RangeSepFunc), intent(in) :: self
-
-    !> name of the algorithm in use
-    character(lc) :: res
-
-    res = self%RSAlg
-
-  end function getRSALg
 
 
   !> Intitialize the range-sep module
@@ -349,22 +334,22 @@ contains
       call checkAndInitScreening(self, matrixSize, tmpDRho)
       tmpDDRho = tmpDRho - self%dRhoprev
       self%dRhoprev = tmpDRho
+      !$OMP PARALLEL DO DEFAULT(SHARED) SCHEDULE(RUNTIME) PRIVATE(tmp, iAtNu)
       do iAtMu = 1, nAtom
         do iAtNu = 1, nAtom
-          tmp = maxval( abs( tmpovr(iSquare(iAtMu):iSquare(iAtMu + 1) - 1,&
-              & iSquare(iAtNu):iSquare(iAtNu + 1) - 1) ) )
-          testovr(iAtMu,iAtNu) = tmp
+          tmp = maxval( abs( tmpovr(&
+              & iSquare(iAtNu):iSquare(iAtNu + 1) - 1, iSquare(iAtMu):iSquare(iAtMu + 1) - 1) ) )
+          testovr(iAtNu,iAtMu) = tmp
         end do
+        call index_heap_sort(ovrind(:,iAtMu),testovr(:,iAtMu))
       end do
-      do iAtMu = 1, nAtom
-        call index_heap_sort(ovrind(iAtMu,:),testovr(iAtMu,:))
-      end do
+      !$OMP END PARALLEL DO
 
     end subroutine allocateAndInit
 
 
     !> Evaluate the update to hamiltonian due to change the in the DM
-    pure subroutine evaluateHamiltonian(tmpDHam)
+    subroutine evaluateHamiltonian(tmpDHam)
 
       !> Update for the old hamiltonian on exit
       real(dp), intent(out) :: tmpDHam(:,:)
@@ -377,39 +362,36 @@ contains
       integer :: kk, ll, jj, ii, mu, nu
       integer, dimension(DESC_LEN) :: descA, descB, descM, descN
 
-      real(dp), allocatable :: gammaCache(:,:)
-
       nAtom = size(self%species)
-      ! marginally faster to make a local copy, at least with gfortran
-      allocate(gammaCache(nAtom, nAtom))
-      gammaCache(:,:) = self%lrGammaEval(:, :)
 
       pbound = maxval(abs(tmpDDRho))
-      tmpDham = 0.0_dp
+      tmpDham(:,:) = 0.0_dp
+      !$OMP PARALLEL DO DEFAULT(SHARED) SCHEDULE(RUNTIME)&
+      !$OMP& PRIVATE(descM, kk, iAt1, descA, iSp1, nOrb1, prb, iAtNu, descN, gammabatchtmp)&
+      !$OMP& PRIVATE(ll, iAt2, iSp2, nOrb2, tstbound, descB, gammabatch, nu, jj, tmpvec2, ii)&
+      !$OMP& PRIVATE(tmpvec1, tmp, mu) REDUCTION(+:tmpDham)
       loopMu: do iAtMu = 1, nAtom
         descM = getDescriptor(iAtMu, iSquare)
         loopKK: do kk = 1, nAtom
-          iAt1 = ovrind(iAtMu, nAtom + 1 - kk)
+          iAt1 = ovrind(nAtom + 1 - kk, iAtMu)
           descA = getDescriptor(iAt1, iSquare)
           iSp1 = self%species(iAt1)
           nOrb1 = orb%nOrbSpecies(iSp1)
-          prb = pbound * testovr(iAt1, iAtMu)
+          prb = pbound * testovr(iAtMu,iAt1)
           if(abs(prb) >= self%pScreeningThreshold) then
             loopNu: do iAtNu = 1, iAtMu
               descN = getDescriptor(iAtNu, iSquare)
-              !gammabatchtmp = self%lrGammaEval(iAtMu, iAtNu) + self%lrGammaEval(iAt1, iAtNu)
-              gammabatchtmp = gammaCache(iAtNu, iAtMu) + gammaCache(iAtNu, iAt1)
+              gammabatchtmp = self%lrGammaEval(iAtMu, iAtNu) + self%lrGammaEval(iAt1, iAtNu)
               loopLL: do ll = 1, nAtom
-                iAt2 = ovrind(iAtNu, nAtom + 1 - ll)
+                iAt2 = ovrind(nAtom + 1 - ll, iAtNu)
                 iSp2 = self%species(iAt2)
                 nOrb2 = orb%nOrbSpecies(iSp2)
                 ! screening condition
-                tstbound = prb * testovr(iAt2, iAtNu)
+                tstbound = prb * testovr(iAtNu, iAt2)
                 if(abs(tstbound) >= self%pScreeningThreshold) then
                   descB = getDescriptor(iAt2, iSquare)
-                  !gammabatch = (self%lrGammaEval(iAtMu, iAt2) + self%lrGammaEval(iAt1, iAt2)&
-                  !    & + gammabatchtmp)
-                  gammabatch = gammaCache(iAt2, iAtMu) + gammaCache(iAt2, iAt1) + gammabatchtmp
+                  gammabatch = (self%lrGammaEval(iAtMu, iAt2) + self%lrGammaEval(iAt1, iAt2)&
+                      & + gammabatchtmp)
                   gammabatch = -0.125_dp * gammabatch
                   ! calculate the Q_AB
                   do nu = descN(ISTART), descN(IEND)
@@ -428,7 +410,6 @@ contains
                 else
                   exit
                 end if
-
               end do loopLL
             end do loopNu
           else
@@ -436,6 +417,7 @@ contains
           end if
         end do loopKK
       end do loopMu
+      !$OMP END PARALLEL DO
 
     end subroutine evaluateHamiltonian
 
@@ -538,16 +520,10 @@ contains
     end subroutine allocateAndInit
 
 
-    !> actually evaluate the neighbour based cutt-off hamiltonian
+    !> actually evaluate the neighbour based cut-off hamiltonian
     subroutine evaluateHamiltonian()
 
-      real(dp), allocatable :: gammaCache(:,:)
-
       nAtom = size(self%species)
-
-      ! marginally faster to make a local copy, at least with gfortran
-      allocate(gammaCache(nAtom, nAtom))
-      gammaCache(:,:) = self%lrGammaEval(:, :)
 
       loopN: do iAtN = 1, nAtom
         descN = getDescriptor(iAtN, iSquare)
@@ -560,15 +536,13 @@ contains
             descA = getDescriptor(iAtA, iSquare)
             call copyDensityBlock(descA, descB, Pab, pPab)
             call copyDensityBlock(descA, descN, Pan, pPan)
-            !gamma1 = self%lrGammaEval(iAtA, iAtN) + self%lrGammaEval(iAtA, iAtB)
-            gamma1 = gammaCache(iAtA, iAtN) + gammaCache(iAtA, iAtB)
+            gamma1 = self%lrGammaEval(iAtA, iAtN) + self%lrGammaEval(iAtA, iAtB)
             loopM: do iNeighA = 0, nNeighbourLC(iAtA)
               iAtM = iNeighbour(iNeighA, iAtA)
               descM = getDescriptor(iAtM, iSquare)
               call copyOverlapBlock(iAtA, iNeighA, descA(INORB), descM(INORB), Sma, pSma)
               call transposeBlock(pSma, Sam, pSam)
-              !gamma2 = self%lrGammaEval(iAtM, iAtN) + self%lrGammaEval(iAtM, iAtB)
-              gamma2 = gammaCache(iAtM, iAtN) + gammaCache(iAtM, iAtB)
+              gamma2 = self%lrGammaEval(iAtM, iAtN) + self%lrGammaEval(iAtM, iAtB)
               gammaTot = gamma1 + gamma2
               !
               if (iAtM >= iAtN) then
@@ -810,7 +784,7 @@ contains
     real(dp), intent(in) :: overlap(:,:)
 
     call env%globalTimer%startTimer(globalTimers%rangeSeparatedH)
-    select case(self%getRSAlg())
+    select case(trim(self%RSAlg))
     case ("tr")
       call addLRHamiltonian_tr(self, env, overlap, densSqr, iSquare, HH, orb)
     case ("nb")
@@ -1128,7 +1102,6 @@ contains
     real(dp) :: sPrimeTmp2(orb%mOrb,orb%mOrb,3)
     real(dp), allocatable :: gammaPrimeTmp(:,:,:), tmpovr(:,:), tmpRho(:,:), tmpderiv(:,:)
 
-    write(stdOut,'(a)') "rangeSep: addLRGradients"
     @:ASSERT(size(gradients,dim=1) == 3)
     call allocateAndInit(tmpovr, tmpRho, gammaPrimeTmp, tmpderiv)
     nAtom = size(self%species)
@@ -1237,7 +1210,6 @@ contains
       call symmetrizeSquareMatrix(tmpovr)
       call symmetrizeSquareMatrix(tmpRho)
       ! precompute the gamma derivatives
-      write(stdOut,'(a)') "precomputing the lr-gamma derivatives"
       gammaPrimeTmp = 0.0_dp
       do iAt1 = 1, nAtom
         do iAt2 = 1, nAtom
@@ -1304,7 +1276,7 @@ contains
         energy = energy + tmp * self%lrGammaEval(iAt1,iAt2)
       end do
     end do
-    energy = -energy / 8.0_dp
+    energy = -0.125_dp * energy
 
     call env%globalTimer%stopTimer(globalTimers%energyEval)
 

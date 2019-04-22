@@ -1279,7 +1279,7 @@ contains
   end subroutine getGammaPrimeValue
 
 
-  !> Adds gradients due to long-range HF-contribution
+  !> Interface routine.
   subroutine addLRGradients(self, gradients, derivator, deltaRho, skHamCont, skOverCont, coords,&
       & species, orb, iSquare, ovrlapMat, iNeighbour, nNeighbourSK)
 
@@ -1288,6 +1288,9 @@ contains
 
     !> energy gradients
     real(dp), intent(inout) :: gradients(:,:)
+
+    !> differentiation object
+    class(NonSccDiff), intent(in) :: derivator
 
     !> density matrix difference from reference q0
     real(dp), intent(in) :: deltaRho(:,:)
@@ -1319,8 +1322,66 @@ contains
     !> number of atoms neighbouring each site where the overlap is non-zero
     integer, intent(in) :: nNeighbourSK(:)
 
+
+    select case(trim(self%RSAlg))
+    case ("tr")
+      call addLRGradients_direct(self, gradients, derivator, deltaRho, skHamCont, skOverCont, coords,&
+      & species, orb, iSquare, ovrlapMat, iNeighbour, nNeighbourSK)
+    case ("trqs")
+      call addLRGradients_direct(self, gradients, derivator, deltaRho, skHamCont, skOverCont, coords,&
+      & species, orb, iSquare, ovrlapMat, iNeighbour, nNeighbourSK)
+    case ("nb")
+      call addLRGradients_direct(self, gradients, derivator, deltaRho, skHamCont, skOverCont, coords,&
+      & species, orb, iSquare, ovrlapMat, iNeighbour, nNeighbourSK)
+    case default
+      call addLRGradients_direct(self, gradients, derivator, deltaRho, skHamCont, skOverCont, coords,&
+      & species, orb, iSquare, ovrlapMat, iNeighbour, nNeighbourSK)
+    end select
+
+  end subroutine addLRGradients
+
+  !> Adds gradients due to long-range HF-contribution directly
+  subroutine addLRGradients_direct(self, gradients, derivator, deltaRho, skHamCont, skOverCont, coords,&
+      & species, orb, iSquare, ovrlapMat, iNeighbour, nNeighbourSK)
+
+    !> class instance
+    class(RangeSepFunc), intent(inout) :: self
+
+    !> energy gradients
+    real(dp), intent(inout) :: gradients(:,:)
+
     !> differentiation object
     class(NonSccDiff), intent(in) :: derivator
+
+    !> density matrix difference from reference q0
+    real(dp), intent(in) :: deltaRho(:,:)
+
+    !> sparse hamiltonian (non-scc)
+    type(OSlakoCont), intent(in) :: skHamCont
+
+    !> sparse overlap part
+    type(OSlakoCont), intent(in) :: skOverCont
+
+    !> atomic coordinates
+    real(dp), intent(in) :: coords(:,:)
+
+    !> chemical species of atoms
+    integer, intent(in) :: species(:)
+
+    !> orbital information for system
+    type(TOrbitals), intent(in) :: orb
+
+    !> index for dense arrays
+    integer, intent(in) :: iSquare(:)
+
+    !> overlap matrix
+    real(dp), intent(in) :: ovrlapMat(:,:)
+
+    !> neighbours of atoms
+    integer, intent(in) :: iNeighbour(0:,:)
+
+    !> number of atoms neighbouring each site where the overlap is non-zero
+    integer, intent(in) :: nNeighbourSK(:)
 
     integer :: nAtom, iAtK, iNeighK, iAtB, iNeighB, iAtC, iAtA, kpa
     real(dp) :: tmpgamma1, tmpgamma2
@@ -1449,7 +1510,180 @@ contains
       end do
     end subroutine allocateAndInit
 
-  end subroutine addLRGradients
+  end subroutine addLRGradients_direct
+
+  !> Adds gradients due to long-range HF-contribution using trqs
+  !> Currently same adn addLRGradients_direct, will work on it
+  subroutine addLRGradients_trqs(self, gradients, derivator, deltaRho, skHamCont, skOverCont, coords,&
+      & species, orb, iSquare, ovrlapMat, iNeighbour, nNeighbourSK)
+
+    !> class instance
+    class(RangeSepFunc), intent(inout) :: self
+
+    !> energy gradients
+    real(dp), intent(inout) :: gradients(:,:)
+
+    !> differentiation object
+    class(NonSccDiff), intent(in) :: derivator
+
+    !> density matrix difference from reference q0
+    real(dp), intent(in) :: deltaRho(:,:)
+
+    !> sparse hamiltonian (non-scc)
+    type(OSlakoCont), intent(in) :: skHamCont
+
+    !> sparse overlap part
+    type(OSlakoCont), intent(in) :: skOverCont
+
+    !> atomic coordinates
+    real(dp), intent(in) :: coords(:,:)
+
+    !> chemical species of atoms
+    integer, intent(in) :: species(:)
+
+    !> orbital information for system
+    type(TOrbitals), intent(in) :: orb
+
+    !> index for dense arrays
+    integer, intent(in) :: iSquare(:)
+
+    !> overlap matrix
+    real(dp), intent(in) :: ovrlapMat(:,:)
+
+    !> neighbours of atoms
+    integer, intent(in) :: iNeighbour(0:,:)
+
+    !> number of atoms neighbouring each site where the overlap is non-zero
+    integer, intent(in) :: nNeighbourSK(:)
+
+    integer :: nAtom, iAtK, iNeighK, iAtB, iNeighB, iAtC, iAtA, kpa
+    real(dp) :: tmpgamma1, tmpgamma2
+    real(dp) :: tmpforce(3), tmpforce_r(3), tmpforce2, tmpmultvar1
+    integer :: mu, nu, alpha, beta, ccc, kkk
+    real(dp) :: dummy(orb%mOrb,orb%mOrb,3), sPrimeTmp(orb%mOrb,orb%mOrb,3)
+    real(dp) :: sPrimeTmp2(orb%mOrb,orb%mOrb,3)
+    real(dp), allocatable :: gammaPrimeTmp(:,:,:), tmpovr(:,:), tmpRho(:,:), tmpderiv(:,:)
+
+    @:ASSERT(size(gradients,dim=1) == 3)
+    call allocateAndInit(tmpovr, tmpRho, gammaPrimeTmp, tmpderiv)
+    nAtom = size(self%species)
+    tmpderiv = 0.0_dp
+    ! sum K
+    loopK: do iAtK = 1, nAtom
+      ! C >= K
+      loopC: do iNeighK = 0, nNeighbourSK(iAtK)
+        iAtC = iNeighbour(iNeighK, iAtK)
+        ! evaluate the ovr_prime
+        sPrimeTmp2 = 0.0_dp
+        sPrimeTmp = 0.0_dp
+        if ( iAtK /= iAtC ) then
+          call derivator%getFirstDeriv(sPrimeTmp, skOverCont, coords, species, iAtK, iAtC, orb)
+          call derivator%getFirstDeriv(sPrimeTmp2, skOverCont, coords, species, iAtC, iAtK, orb)
+        end if
+        loopB: do iAtB = 1, nAtom
+          ! A > B
+          loopA: do iNeighB = 0, nNeighbourSK(iAtB)
+            iAtA = iNeighbour(iNeighB, iAtB)
+            tmpgamma1 = self%lrGammaEval(iAtK,iAtB) + self%lrGammaEval(iAtC,iAtB)
+            tmpgamma2 = tmpgamma1 + self%lrGammaEval(iAtK,iAtA) + self%lrGammaEval(iAtC,iAtA)
+            tmpforce(:) = 0.0_dp
+            tmpforce_r(:) = 0.0_dp
+            tmpforce2 = 0.0_dp
+            ccc = 0
+            do mu = iSquare(iAtC), iSquare(iAtC + 1) - 1
+              ccc = ccc + 1
+              kkk = 0
+              do kpa = iSquare(iAtK), iSquare(iAtK + 1) - 1
+                kkk = kkk + 1
+                tmpmultvar1 = 0.0_dp
+                do alpha = iSquare(iAtA), iSquare(iAtA + 1) - 1
+                  do beta = iSquare(iAtB), iSquare(iAtB + 1) - 1
+                    tmpmultvar1 = tmpmultvar1 + tmpovr(beta, alpha) * (tmpRho(beta,kpa) &
+                        & * tmpRho(alpha,mu) + tmpRho(alpha,kpa) * tmpRho(beta,mu))
+                  end do
+                end do
+                tmpforce(:) = tmpforce(:) + tmpmultvar1 * (sPrimeTmp(ccc,kkk,:))
+                tmpforce_r(:) = tmpforce_r(:) + tmpmultvar1 * (sPrimeTmp2(kkk,ccc,:))
+                tmpforce2 = tmpforce2 + tmpmultvar1 * tmpovr(kpa,mu)
+              end do
+            end do
+
+            ! C /= K
+            if( iAtK /= iAtC ) then
+              if( iAtB /= iAtA) then
+                tmpforce(:) = tmpforce(:) * tmpgamma2
+                tmpforce_r(:) = tmpforce_r(:) * tmpgamma2
+                tmpforce(:) = tmpforce(:) + tmpforce2 * (gammaPrimeTmp(:,iAtK,iAtA) &
+                    & + gammaPrimeTmp(:,iAtK,iAtB))
+                tmpforce_r(:) = tmpforce_r(:) + tmpforce2 * (gammaPrimeTmp(:,iAtC,iAtA) &
+                    & + gammaPrimeTmp(:,iAtC,iAtB))
+              else
+                tmpforce(:) = tmpforce(:) * tmpgamma1
+                tmpforce_r(:) = tmpforce_r(:) * tmpgamma1
+                tmpforce(:) = tmpforce(:) + tmpforce2 * (gammaPrimeTmp(:,iAtK,iAtA))
+                tmpforce_r(:) = tmpforce_r(:) + tmpforce2 * (gammaPrimeTmp(:,iAtC,iAtA))
+              end if
+            else
+              if( iAtB /= iAtA) then
+                tmpforce(:) = tmpforce(:) + tmpforce2 * (gammaPrimeTmp(:,iAtK,iAtA) &
+                    & + gammaPrimeTmp(:,iAtK,iAtB))
+              else
+                tmpforce(:) = tmpforce(:) + tmpforce2 * (gammaPrimeTmp(:,iAtK,iAtA))
+              end if
+            end if
+            tmpderiv(:,iAtK) = tmpderiv(:,iAtK) + tmpforce(:)
+            tmpderiv(:,iAtC) = tmpderiv(:,iAtC) + tmpforce_r(:)
+          end do loopA
+        end do loopB
+      end do loopC
+    end do loopK
+
+    gradients(:,:) = gradients -0.25_dp * tmpderiv
+
+    deallocate(tmpovr, tmpRho, gammaPrimeTmp, tmpderiv)
+
+  contains
+
+    !> Initialise the
+    subroutine allocateAndInit(tmpovr, tmpRho, gammaPrimeTmp, tmpderiv)
+
+      !> Storage for the overlap
+      real(dp), allocatable, intent(inout) :: tmpovr(:,:)
+
+      !> storage for density matrix
+      real(dp), allocatable, intent(inout) :: tmpRho(:,:)
+
+      !> storage for derivative of gamma interaction
+      real(dp), allocatable, intent(inout) :: gammaPrimeTmp(:,:,:)
+
+      !> workspace for the derivatives
+      real(dp), allocatable, intent(inout) :: tmpderiv(:,:)
+
+      real(dp) :: tmp(3)
+      integer :: iAt1, iAt2, nAtom
+
+      nAtom = size(self%species)
+      allocate(tmpovr(size(ovrlapMat, dim = 1), size(ovrlapMat, dim = 1)))
+      allocate(tmpRho(size(deltaRho, dim = 1), size(deltaRho, dim = 1)))
+      allocate(gammaPrimeTmp(3, nAtom, nAtom))
+      allocate(tmpderiv(3, size(gradients, dim = 2)))
+      tmpovr = ovrlapMat
+      tmpRho = deltaRho
+      call symmetrizeSquareMatrix(tmpovr)
+      call symmetrizeSquareMatrix(tmpRho)
+      ! precompute the gamma derivatives
+      gammaPrimeTmp = 0.0_dp
+      do iAt1 = 1, nAtom
+        do iAt2 = 1, nAtom
+          if(iAt1 /= iAt2) then
+            call getGammaPrimeValue(self, tmp, iAt1, iAt2, coords, species)
+            gammaPrimeTmp(:,iAt1, iAt2) = tmp(:)
+          end if
+        end do
+      end do
+    end subroutine allocateAndInit
+
+  end subroutine addLRGradients_trqs
 
 
   !> evaluate the LR-Energy contribution directly. Very slow, use addLREnergy instead.

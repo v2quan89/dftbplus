@@ -1,0 +1,40 @@
+Geometry = GenFormat {
+    <<< geo.gen
+}
+
+Driver = {}
+
+Hamiltonian = DFTB {
+  SCC = Yes
+  SCCTolerance = 1.0E-6
+  MaxAngularMomentum = {
+    H = "s"
+    C = "p"
+    N = "p"
+    O = "p"
+  }
+
+  SlaterKosterFiles = Type2Filenames{
+    Prefix = "./"
+    Suffix = ".skf"
+    Separator = "-" 
+    LowerCaseTypeName = No
+  }
+
+  RangeSep = {
+    Algorithm = TRQS { Threshold = 1.0e-7 }
+  }
+}
+
+Options = {
+  WriteAutotestTag = Yes
+}
+
+Analysis {
+  CalculateForces = Yes
+  AtomResolvedEnergies = Yes
+}
+
+ParserOptions = {
+  ParserVersion = 5
+}

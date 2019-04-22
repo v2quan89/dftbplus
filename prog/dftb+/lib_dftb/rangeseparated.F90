@@ -20,6 +20,7 @@ module rangeseparated
   use sorting
   use sparse2dense, only : blockSymmetrizeHS
   use globalenv, only : stdOut
+  use blasroutines
   implicit none
   private
 
@@ -208,6 +209,9 @@ contains
       case ("tr")
         write(StdOut,'(a)') "  -> using the thresholding algorithm"
         write(StdOut,'(a,E17.8)') "     -> Screening Threshold:", self%pScreeningThreshold
+      case ("trqs")
+        write(StdOut,'(a)') "  -> using the thresholding algorithm for Q block and overlap"
+        write(StdOut,'(a,E17.8)') "     -> Screening Threshold:", self%pScreeningThreshold
       case default
         call error("Invalid algorithm for screening exchange")
       end select
@@ -366,10 +370,10 @@ contains
 
       pbound = maxval(abs(tmpDDRho))
       tmpDham(:,:) = 0.0_dp
-      !$OMP PARALLEL DO DEFAULT(SHARED) SCHEDULE(RUNTIME)&
-      !$OMP& PRIVATE(descM, kk, iAt1, descA, iSp1, nOrb1, prb, iAtNu, descN, gammabatchtmp)&
-      !$OMP& PRIVATE(ll, iAt2, iSp2, nOrb2, tstbound, descB, gammabatch, nu, jj, tmpvec2, ii)&
-      !$OMP& PRIVATE(tmpvec1, tmp, mu) REDUCTION(+:tmpDham)
+      !!$OMP PARALLEL DO DEFAULT(SHARED) SCHEDULE(RUNTIME)&
+      !!$OMP& PRIVATE(descM, kk, iAt1, descA, iSp1, nOrb1, prb, iAtNu, descN, gammabatchtmp)&
+      !!$OMP& PRIVATE(ll, iAt2, iSp2, nOrb2, tstbound, descB, gammabatch, nu, jj, tmpvec2, ii)&
+      !!$OMP& PRIVATE(tmpvec1, tmp, mu) REDUCTION(+:tmpDham)
       loopMu: do iAtMu = 1, nAtom
         descM = getDescriptor(iAtMu, iSquare)
         loopKK: do kk = 1, nAtom
@@ -417,7 +421,7 @@ contains
           end if
         end do loopKK
       end do loopMu
-      !$OMP END PARALLEL DO
+      !!$OMP END PARALLEL DO
 
     end subroutine evaluateHamiltonian
 
@@ -445,6 +449,228 @@ contains
     end subroutine checkAndInitScreening
 
   end subroutine addLRHamiltonian_tr
+
+
+  !> Adds the LR-exchange contribution to hamiltonian using the thresholding algorithm TRQS
+  !> Cutoff is based on both Q block and S overlap matrix 
+  subroutine addLRHamiltonian_trqs(self, env, overlap, deltaRho, iSquare, hamiltonian, orb)
+
+    !> class instance
+    type(RangeSepFunc), intent(inout) :: self
+
+    !> Environment settings
+    type(TEnvironment), intent(inout) :: env
+
+    !> square real overlap matrix
+    real(dp), intent(in) :: overlap(:,:)
+
+    !> square density matrix (deltaRho in DFTB terms)
+    real(dp), intent(in) :: deltaRho(:,:)
+
+    !> mapping atom_number -> number of the first basis function of the atomic block atom_number
+    integer, intent(in) :: iSquare(:)
+
+    !> current hamiltonian
+    real(dp), intent(inout) :: hamiltonian(:,:)
+
+    !> orbital information
+    type(TOrbitals), intent(in) :: orb
+
+    real(dp), allocatable :: tmpovr(:,:), tmpDRho(:,:), testovr(:,:), tmpDDRho(:,:), tmpDham(:,:)
+    integer, allocatable :: ovrind(:,:)
+    real(dp), allocatable :: pboundAB(:,:)
+    !real(dp), allocatable :: work(:,:)
+    integer, parameter :: DESC_LEN = 3, ISTART = 1, IEND = 2, INORB = 3
+
+    call allocateAndInit(tmpovr, tmpDham, tmpDRho, tmpDDRho, testovr, ovrind, pboundAB)
+    call evaluateHamiltonian(tmpDHam)
+    self%hprev = self%hprev + tmpDham
+    hamiltonian = hamiltonian + self%hprev
+    self%lrenergy = self%lrenergy + evaluateEnergy(self%hprev, tmpDRho)
+
+  contains
+
+    !> allocate and initialise some necessary arrays
+    subroutine allocateAndInit(tmpovr, tmpDham, tmpDRho, tmpDDRho, testovr, ovrind, pboundAB)
+
+      !> overlap matrix
+      real(dp), allocatable, intent(inout) :: tmpovr(:,:)
+
+      !> Update on hamiltonian from DM changes
+      real(dp), allocatable, intent(inout) :: tmpDham(:,:)
+
+      !> Density matrix minus reference density matrix
+      real(dp), allocatable, intent(inout) :: tmpDRho(:,:)
+
+      !> Change in tmpDRho between iteration, used for update
+      real(dp), allocatable, intent(inout) :: tmpDDRho(:,:)
+
+      !> matrix of test values for overlap (based on maximum overlap elements between atoms)
+      real(dp), allocatable, intent(inout) :: testovr(:,:)
+
+      !> sorted index array for maximal overlap elements between atom blocks
+      integer, allocatable, intent(inout) :: ovrind(:,:)
+
+      !> matrix of test values for DRho (based on maximum DRho elements between atoms)
+      real(dp), allocatable, intent(inout) :: pboundAB(:,:)
+
+      !real(dp), allocatable, intent(inout) :: work(:,:)
+
+      integer :: matrixSize, nAtom
+      real(dp) :: tmp
+      integer :: iAtMu, iAtNu
+
+      matrixSize = size(hamiltonian, dim = 1)
+      nAtom = size(self%species)
+      allocate(tmpovr(matrixSize, matrixSize))
+      allocate(tmpDham(matrixSize, matrixSize))
+      allocate(tmpDRho(matrixSize, matrixSize))
+      allocate(tmpDDRho(matrixSize, matrixSize))
+      allocate(testovr(nAtom,nAtom))
+      allocate(ovrind(nAtom,nAtom))
+      allocate(pboundAB(nAtom,nAtom))
+      !allocate(work(matrixSize, matrixSize))
+      tmpovr = overlap
+      call blockSymmetrizeHS(tmpovr, iSquare)
+      tmpDRho = deltaRho
+      call symmetrizeSquareMatrix(tmpDRho)
+      tmpDham = 0.0_dp
+      !work = 0.0_dp
+      call checkAndInitScreening(self, matrixSize, tmpDRho)
+      tmpDDRho = tmpDRho - self%dRhoprev
+      self%dRhoprev = tmpDRho
+      !!$OMP PARALLEL DO DEFAULT(SHARED) SCHEDULE(RUNTIME) PRIVATE(iAtMu, iAtNu, tmp)
+      do iAtMu = 1, nAtom
+        do iAtNu = 1, nAtom
+          tmp = maxval( abs( tmpovr(&
+              & iSquare(iAtNu):iSquare(iAtNu + 1) - 1, iSquare(iAtMu):iSquare(iAtMu + 1) - 1) ) )
+          testovr(iAtNu,iAtMu) = tmp
+        end do
+        call index_heap_sort(ovrind(:,iAtMu),testovr(:,iAtMu))
+      end do
+      !!$OMP END PARALLEL DO
+
+    end subroutine allocateAndInit
+
+
+    !> Evaluate the update to hamiltonian due to change the in the DM
+    subroutine evaluateHamiltonian(tmpDHam)
+
+      !> Update for the old hamiltonian on exit
+      real(dp), intent(out) :: tmpDHam(:,:)
+
+      integer :: nAtom
+      real(dp) :: pbound, prb
+      real(dp) :: tmpvec1(orb%mOrb), tmpvec2(orb%mOrb), tmpvec3(orb%mOrb)
+      real(dp) :: tmp, tstboundA, tstboundAB
+      real(dp) :: gammatotal, gammaMuB, gammaMuNu, gammaAB, gammaANu
+      integer :: iAtMu, iAtNu, iAtA, iAtB, iSp1, iSp2, nOrb1, nOrb2
+      integer :: nn, kk, ll, jj, ii, mu, nu
+      integer, dimension(DESC_LEN) :: descA, descB, descM, descN
+
+      nAtom = size(self%species)
+
+      pbound = maxval(abs(tmpDDRho))
+      !> update matrix of test values for DRho 
+      do iAtMu = 1, nAtom
+        do iAtNu = 1, nAtom
+          tmp = maxval( abs( tmpDDRho(&
+              & iSquare(iAtNu):iSquare(iAtNu + 1) - 1, iSquare(iAtMu):iSquare(iAtMu + 1) - 1) ) )
+          pboundAB(iAtNu,iAtMu) = tmp
+        end do
+      end do
+      tmpDham(:,:) = 0.0_dp
+      !work = 0.0_dp
+      !!$OMP& PRIVATE(iAtMu, descM, iAtNu, descN, iAtA, descA, iAtB, descB)&
+      !!$OMP PARALLEL DO DEFAULT(NONE) SCHEDULE(RUNTIME)&
+      !!$OMP& PRIVATE(iAtNu, descN, iAtA, descA, iAtB, descB)&
+      !!$OMP& PRIVATE(tstboundA, tstboundAB, prb, gammaMuB, gammaMuNu, gammaAB, gammaANu, gammatotal)&
+      !!$OMP& SHARED(iAtMu, descM, self, nAtom, iSquare, testovr, pbound, pboundAB, tmpovr, tmpDDRho, tmpDham)
+      loopMu: do iAtMu = 1, nAtom
+        descM = getDescriptor(iAtMu, iSquare)
+        loopNu: do iAtNu = 1, iAtMu
+          descN = getDescriptor(iAtNu, iSquare)
+          prb =  testovr(iAtMu, iAtNu)
+          if(abs(prb) >= 1.0_dp * self%pScreeningThreshold) then
+            gammaMuNu = self%lrGammaEval(iAtMu, iAtNu)
+            loopAA: do iAtA = 1, nAtom
+              descA = getDescriptor(iAtA, iSquare)
+              tstboundA = testovr(iAtMu, iAtA) * pbound 
+              if(abs(tstboundA) >= self%pScreeningThreshold) then
+                gammaANu = self%lrGammaEval(iAtA, iAtNu)
+                loopBB: do iAtB = 1, nAtom
+                  descB = getDescriptor(iAtB, iSquare)
+                  tstboundAB = testovr(iAtMu, iAtA) * pboundAB(iAtA, iAtB) * testovr(iAtNu, iAtB) 
+                  if(abs(tstboundAB) >= self%pScreeningThreshold) then
+                    gammaMuB = self%lrGammaEval(iAtMu, iAtB)
+                    gammaAB = self%lrGammaEval(iAtA, iAtB)
+                    gammatotal = -0.125_dp * (gammaMuB + gammaMuNu + gammaAB + gammaANu)
+                    ! calculate the Q_AB
+                     tmpDham(descM(ISTART):descM(IEND), descN(ISTART):descN(IEND)) = &
+                       & tmpDham(descM(ISTART):descM(IEND), descN(ISTART):descN(IEND)) +&
+                       & gammatotal * matmul(matmul(&
+                       & tmpovr(descM(ISTART):descM(IEND),descA(ISTART):descA(IEND)),&
+                       & tmpDDRho(descA(ISTART):descA(IEND),descB(ISTART):descB(IEND))),&
+                       & tmpovr(descB(ISTART):descB(IEND),descN(ISTART):descN(IEND)))
+                    
+                    !work(descM(ISTART):descM(IEND),descB(ISTART):descB(IEND)) = matmul(&
+                    !  & tmpovr(descM(ISTART):descM(IEND),descA(ISTART):descA(IEND)),&
+                    !  & tmpDDRho(descA(ISTART):descA(IEND),descB(ISTART):descB(IEND)))
+
+                    !tmpDham(descM(ISTART):descM(IEND), descN(ISTART):descN(IEND)) = &
+                    !  & tmpDham(descM(ISTART):descM(IEND), descN(ISTART):descN(IEND)) +&
+                    !  & gammatotal * matmul(work(descM(ISTART):descM(IEND),descB(ISTART):descB(IEND)),&
+                    !  & tmpovr(descB(ISTART):descB(IEND),descN(ISTART):descN(IEND)))
+                    
+                    ! gemm_dble may faster than matmul, need to check later
+                    !call gemm_dble(work(descM(ISTART):descM(IEND),descB(ISTART):descB(IEND)),&
+                    !           & tmpovr(descM(ISTART):descM(IEND),descA(ISTART):descA(IEND)),&
+                    !           & tmpDDRho(descA(ISTART):descA(IEND),descB(ISTART):descB(IEND)))
+                    !call gemm_dble(tmpDham(descM(ISTART):descM(IEND), descN(ISTART):descN(IEND)),&
+                    !           & work(descM(ISTART):descM(IEND),descB(ISTART):descB(IEND)),&
+                    !           & tmpovr(descB(ISTART):descB(IEND),descN(ISTART):descN(IEND)), gammatotal)
+                  else
+                    cycle 
+                  end if
+                end do loopBB
+              else
+                cycle 
+              end if
+            end do loopAA
+          else
+            cycle 
+          end if
+        end do loopNu
+      end do loopMu
+      !!$OMP END PARALLEL DO
+
+    end subroutine evaluateHamiltonian
+
+
+    !> Initialise the screening matrices
+    subroutine checkAndInitScreening(self, matrixSize, tmpDRho)
+
+      !> Instance
+      class(RangeSepFunc), intent(inout) :: self
+
+      !> linear dimension of matrix
+      integer, intent(in) :: matrixSize
+
+      !> Delta rho from iteration
+      real(dp), allocatable, intent(in) :: tmpDRho(:,:)
+
+      if(.not. self%tScreeningInited) then
+        allocate(self%hprev(matrixSize, matrixSize))
+        allocate(self%dRhoprev(matrixSize, matrixSize))
+        self%hprev = 0.0_dp
+        self%dRhoprev = tmpDRho
+        self%tScreeningInited = .true.
+      end if
+
+    end subroutine checkAndInitScreening
+
+  end subroutine addLRHamiltonian_trqs
+
 
 
   !> Updates the Hamiltonian with the range separated contribution.
@@ -787,6 +1013,8 @@ contains
     select case(trim(self%RSAlg))
     case ("tr")
       call addLRHamiltonian_tr(self, env, overlap, densSqr, iSquare, HH, orb)
+    case ("trqs")
+      call addLRHamiltonian_trqs(self, env, overlap, densSqr, iSquare, HH, orb)
     case ("nb")
       call addLRHamiltonian_nb(self, env, densSqr, over, iNeighbour, nNeighbourLC, iSquare, iPair,&
           & orb, HH)

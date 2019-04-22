@@ -2112,7 +2112,7 @@ contains
       if (.not.tRealHS .or. tPeriodic) then
         call error("Range separated functionality only works with non-periodic structures")
       end if
-      if (tReadChrg .and. input%ctrl%rangeSepAlgorithm == "tr") then
+      if (tReadChrg .and. (input%ctrl%rangeSepAlgorithm == "tr" .or. input%ctrl%rangeSepAlgorithm == "trqs")) then
         call error("Restart on thresholded range separation not working correctly")
       end if
       if (input%ctrl%tOrbResolved) then
@@ -2132,9 +2132,11 @@ contains
       deltaRhoInSqr(:,:,:) = 0.0_dp
       select case(trim(input%ctrl%rangeSepAlgorithm))
       case ("tr")
-        write(StdOut,*) "Using the Neighbor list-based algorithm"
-      case ("nb")
         write(StdOut,*) "Using the Thresholding algorithm"
+      case ("trqs")
+        write(StdOut,*) "Using the Thresholding algorithm Version 2: Q and S"
+      case ("nb")
+        write(StdOut,*) "Using the Neighbor list-based algorithm"
       end select
     end if
 

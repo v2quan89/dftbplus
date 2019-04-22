@@ -1472,7 +1472,9 @@ contains
             & modifier=modifier, child=field)
         call convertByMul(char(modifier), lengthUnits, field, ctrl%screeningThreshold)
       case ("tr")
-        call getChildValue(value1, "Threshold", ctrl%screeningThreshold, 0.1e-5_dp)
+        call getChildValue(value1, "Threshold", ctrl%screeningThreshold, 0.1e-6_dp)
+      case ("trqs")
+        call getChildValue(value1, "Threshold", ctrl%screeningThreshold, 0.1e-6_dp)
       case default
         call getNodeHSDName(value1, buffer)
         call detailedError(child, "Invalid Algorithm '" // char(buffer) // "'")
